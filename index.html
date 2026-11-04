@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PokéVault – Card Set Tracker</title>
+  <meta name="description" content="Track your Pokémon TCG master sets, promos and stamped cards, and see what your collection is worth." />
+  <meta name="theme-color" content="#140a24" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%23a855f7' stroke='%23140a24' stroke-width='6'/%3E%3Crect x='4' y='46' width='92' height='8' fill='%23140a24'/%3E%3Ccircle cx='50' cy='50' r='14' fill='%23f5f3ff' stroke='%23140a24' stroke-width='6'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-ball" aria-hidden="true"></span>
+      <span>Poké<b>Vault</b></span>
+    </a>
+    <nav class="nav" id="nav">
+      <a href="#/" data-route="portfolio">Portfolio</a>
+      <a href="#/sets" data-route="sets">Sets</a>
+      <a href="#/cards" data-route="cards">Card Explorer</a>
+      <a href="#/settings" data-route="settings">Settings</a>
+    </nav>
+    <div class="currency" role="group" aria-label="Currency">
+      <button data-cur="USD" title="TCGplayer market price (USD)">$</button>
+      <button data-cur="EUR" title="Cardmarket trend price (EUR)">€</button>
+    </div>
+  </header>
+
+  <main id="app" tabindex="-1">
+    <div class="loading"><div class="spinner"></div><p>Loading your vault…</p></div>
+  </main>
+
+  <dialog id="modal" class="modal"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <footer class="footer">
+    Card data, images &amp; prices from <a href="https://tcgdex.dev" target="_blank" rel="noopener">TCGdex</a>
+    (TCGplayer / Cardmarket). Your collection is stored in this browser – use Settings to back it up.
+    Pokémon and its trademarks are © Nintendo, Creatures &amp; GAME FREAK. Not affiliated.
+  </footer>
+
+  <script src="js/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,917 @@
+// PokéVault – Pokémon TCG master-set tracker
+// Static single-page app. Card data lives in /data (built by scripts/build-data.mjs),
+// the user's collection lives in localStorage.
+
+const $ = (sel, el = document) => el.querySelector(sel);
+const app = $('#app');
+const modal = $('#modal');
+
+const LS_COLLECTION = 'pokevault.collection.v1';
+const LS_PREFS = 'pokevault.prefs.v1';
+const EUR_TO_USD = 1.1; // used only when a price is missing in the selected currency
+
+// --------------------------------------------------------------------------
+// Storage
+// --------------------------------------------------------------------------
+function load(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function save(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    toast('Could not save – browser storage is full or blocked');
+  }
+}
+
+/** collection: { "<cardId>|<variantKey>": { q: quantity, t: addedTimestamp } } */
+let collection = load(LS_COLLECTION, {});
+const prefs = Object.assign(
+  { currency: 'USD', mode: 'master', filter: 'all', sort: 'number', exSort: 'value-desc', exFilter: 'all', exSeries: 'all', setsSort: 'newest', tile: 160 },
+  load(LS_PREFS, {}),
+);
+const savePrefs = () => save(LS_PREFS, prefs);
+const saveCollection = () => save(LS_COLLECTION, collection);
+
+const keyOf = (cardId, vk) => `${cardId}|${vk}`;
+const qtyOf = (cardId, vk) => collection[keyOf(cardId, vk)]?.q || 0;
+const setIdOfCard = (cardId) => cardId.slice(0, cardId.lastIndexOf('-'));
+
+function setQty(cardId, vk, q) {
+  const k = keyOf(cardId, vk);
+  if (q > 0) collection[k] = { q, t: collection[k]?.t || Date.now() };
+  else delete collection[k];
+  saveCollection();
+}
+
+// --------------------------------------------------------------------------
+// Data
+// --------------------------------------------------------------------------
+let INDEX = null; // { sets: [...] }
+const setCache = new Map();
+
+async function getIndex() {
+  if (INDEX) return INDEX;
+  const res = await fetch('data/sets.json', { cache: 'no-cache' });
+  if (!res.ok) throw new Error('Could not load set list');
+  INDEX = await res.json();
+  INDEX.byId = new Map(INDEX.sets.map((s) => [s.id, s]));
+  return INDEX;
+}
+
+function getSet(id) {
+  if (!setCache.has(id)) {
+    const p = fetch(`data/sets/${encodeURIComponent(id)}.json`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Set ${id} not found`);
+        return r.json();
+      })
+      .then((s) => {
+        s.cards.forEach((c, i) => (c.idx = i));
+        return s;
+      });
+    p.catch(() => setCache.delete(id));
+    setCache.set(id, p);
+  }
+  return setCache.get(id);
+}
+
+async function getSets(ids, onProgress) {
+  let done = 0;
+  const out = [];
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      while (i < ids.length) {
+        const id = ids[i++];
+        try {
+          out.push(await getSet(id));
+        } catch {
+          /* skip missing set */
+        }
+        onProgress?.(++done, ids.length);
+      }
+    }),
+  );
+  return out;
+}
+
+/** owned slot count per set straight from the collection keys */
+function ownedBySet() {
+  const m = new Map();
+  for (const k of Object.keys(collection)) {
+    const sid = setIdOfCard(k.split('|')[0]);
+    m.set(sid, (m.get(sid) || 0) + 1);
+  }
+  return m;
+}
+
+// --------------------------------------------------------------------------
+// Formatting
+// --------------------------------------------------------------------------
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/** price of a variant in the chosen currency → { v: number|null, approx: bool } */
+function priceOf(v) {
+  if (prefs.currency === 'USD') {
+    if (v.u != null) return { v: v.u, approx: false };
+    if (v.e != null) return { v: v.e * EUR_TO_USD, approx: true };
+  } else {
+    if (v.e != null) return { v: v.e, approx: false };
+    if (v.u != null) return { v: v.u / EUR_TO_USD, approx: true };
+  }
+  return { v: null, approx: false };
+}
+const priceNum = (v) => priceOf(v).v ?? 0;
+
+function money(n, { compact = false } = {}) {
+  if (n == null) return '—';
+  const opts = { style: 'currency', currency: prefs.currency, maximumFractionDigits: n >= 1000 || compact ? 0 : 2, minimumFractionDigits: n >= 1000 || compact ? 0 : 2 };
+  if (compact && n >= 100000) Object.assign(opts, { notation: 'compact', maximumFractionDigits: 1 });
+  return new Intl.NumberFormat(undefined, opts).format(n);
+}
+function priceHtml(v) {
+  const p = priceOf(v);
+  if (p.v == null) return '<span class="approx">no price</span>';
+  return `<span class="value">${p.approx ? '<span class="approx" title="Converted from the other market">≈</span>' : ''}${money(p.v)}</span>`;
+}
+const num = (n) => new Intl.NumberFormat().format(n);
+const pct = (a, b) => (b ? Math.floor((a / b) * 1000) / 10 : 0);
+function fmtDate(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+}
+const imgUrl = (c, q = 'low') => (c.img ? `${c.img}/${q}.webp` : '');
+
+const STAMP_NAMES = {
+  '1st-edition': '1st Edition', 'pokemon-center': 'Pokémon Center', 'set-logo': 'Set Logo', staff: 'Staff', 'w-promo': 'W Promo',
+  'player-rewards-program': 'Play! Rewards', 'professor-program': 'Professor', 'pokemon-together': 'Pokémon Together',
+  gamestop: 'GameStop', 'eb-games': 'EB Games', 'top-thirty-two': 'Top 32', 'top-sixteen': 'Top 16', 'top-eight': 'Top 8',
+  'semi-finalist': 'Semi-Finalist', finalist: 'Finalist', winner: 'Winner', prerelease: 'Prerelease',
+};
+const FOIL_NAMES = { cosmos: 'Cosmos Holo', pokeball: 'Poké Ball', masterball: 'Master Ball', galaxy: 'Galaxy Holo', gold: 'Gold', league: 'League', cracked_ice: 'Cracked Ice', 'cracked-ice': 'Cracked Ice' };
+const titleCase = (s) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bPokemon\b/g, 'Pokémon');
+
+/** [{text, cls}] badges describing the printing */
+function variantBadges(v, card) {
+  const out = [];
+  const stamps = v.s || [];
+  if (stamps.includes('1st-edition')) out.push({ text: '1st Edition', cls: 'ed' });
+  if (v.sub && v.sub !== 'unlimited') out.push({ text: titleCase(v.sub), cls: 'ed' });
+  else if (v.sub === 'unlimited') out.push({ text: 'Unlimited', cls: '' });
+  if (v.t === 'reverse') out.push({ text: 'Reverse Holo', cls: 'rev' });
+  else if (v.t === 'holo') {
+    if (!/holo|rare|ex|gx|v$|vmax|vstar|ultra|secret|illustration|hyper|amazing|radiant|ace/i.test(card?.r || '') || card?.v?.some((x) => x.t === 'normal' && !x.s && !x.f))
+      out.push({ text: 'Holo', cls: 'holo' });
+  } else if (v.t !== 'normal') out.push({ text: titleCase(v.t), cls: 'holo' });
+  if (v.f) out.push({ text: FOIL_NAMES[v.f] || titleCase(v.f), cls: 'foilb' });
+  for (const s of stamps) if (s !== '1st-edition') out.push({ text: STAMP_NAMES[s] || titleCase(s), cls: 'stamp' });
+  if (v.z) out.push({ text: titleCase(v.z), cls: 'size' });
+  return out;
+}
+const variantName = (v, card) => variantBadges(v, card).map((b) => b.text).join(' · ') || (v.t === 'holo' ? 'Holo' : 'Normal');
+const badgesHtml = (v, card) => variantBadges(v, card).map((b) => `<span class="badge ${b.cls}">${esc(b.text)}</span>`).join('');
+const isFoil = (v) => v.t !== 'normal' || !!v.f;
+
+// --------------------------------------------------------------------------
+// UI helpers
+// --------------------------------------------------------------------------
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+const bar = (p, done = false) => `<div class="bar${done ? ' done' : ''}"><i style="width:${Math.min(100, p)}%"></i></div>`;
+function ring(p) {
+  const r = 50, c = 2 * Math.PI * r;
+  const done = p >= 100;
+  return `<svg class="ring" viewBox="0 0 120 120" role="img" aria-label="${p}% complete">
+    <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${done ? '#f59e0b' : '#7c3aed'}"/><stop offset="1" stop-color="${done ? '#fbbf24' : '#c084fc'}"/></linearGradient></defs>
+    <circle cx="60" cy="60" r="${r}" fill="none" stroke="#321e52" stroke-width="12"/>
+    <circle cx="60" cy="60" r="${r}" fill="none" stroke="url(#rg)" stroke-width="12" stroke-linecap="round"
+      stroke-dasharray="${(c * Math.min(p, 100)) / 100} ${c}" transform="rotate(-90 60 60)"/>
+    <text x="60" y="66" text-anchor="middle" fill="#f3eefe" font-size="22" font-weight="700" font-family="Outfit, sans-serif">${p}%</text>
+  </svg>`;
+}
+function setLogo(s, cls = '') {
+  return s.logo ? `<img class="${cls}" src="${esc(s.logo)}.webp" alt="${esc(s.name)} logo" loading="lazy" data-fallback="${esc(s.name)}">` : `<span class="txt">${esc(s.name)}</span>`;
+}
+// Broken images → text/placeholder fallback
+document.addEventListener(
+  'error',
+  (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    if (img.dataset.fallback != null) {
+      const span = document.createElement('span');
+      span.className = 'txt';
+      span.textContent = img.dataset.fallback;
+      img.replaceWith(span);
+    } else if (img.classList.contains('card-img')) {
+      if (img.src.endsWith('.webp')) {
+        img.src = img.src.replace(/\.webp$/, '.png');
+        return;
+      }
+      const ph = document.createElement('div');
+      ph.className = 'placeholder';
+      ph.textContent = img.alt || 'No image';
+      img.replaceWith(ph);
+    }
+  },
+  true,
+);
+
+function loading(msg = 'Loading…') {
+  app.innerHTML = `<div class="loading"><div class="spinner"></div><p>${esc(msg)}</p></div>`;
+}
+
+/** One card tile. `entry` = { card, v, set } */
+function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
+  const q = qtyOf(card.id, v.k);
+  const owned = anyOwned ?? q > 0;
+  const k = keyOf(card.id, v.k);
+  return `<div class="tile${owned ? ' owned' : ''}${isFoil(v) ? ' foil' : ''}" data-key="${esc(k)}">
+    <div class="fw"><button class="face" data-act="toggle" aria-pressed="${owned}" title="${owned ? 'Owned – click to remove' : 'Click to mark as owned'}">
+      ${card.img ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder">${esc(card.name)}</div>`}
+      <span class="check" aria-hidden="true">✓</span>
+      ${q > 1 ? `<span class="qty">×${q}</span>` : ''}
+    </button>
+    <button class="info-btn" data-act="info" aria-label="Details for ${esc(card.name)}">i</button></div>
+    <div class="cap"><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) ? '/' + set.official : ''}</span></div>
+    <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${priceHtml(v)}</div>
+    ${showSet ? `<div class="setname">${esc(set.name)}</div>` : ''}
+  </div>`;
+}
+
+// Delegated grid clicks (toggle ownership / open details)
+let gridLookup = new Map(); // key -> {card, v, set}
+let afterToggle = () => {};
+app.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const tile = btn.closest('.tile');
+  if (!tile) return;
+  const entry = gridLookup.get(tile.dataset.key);
+  if (!entry) return;
+  if (btn.dataset.act === 'info') return openCard(entry.card, entry.set);
+  if (btn.dataset.act === 'toggle') {
+    const { card, v } = entry;
+    if (entry.base) {
+      // base-set mode: toggle the whole card number
+      const any = card.v.some((x) => qtyOf(card.id, x.k));
+      if (any) card.v.forEach((x) => setQty(card.id, x.k, 0));
+      else setQty(card.id, v.k, 1);
+    } else {
+      setQty(card.id, v.k, qtyOf(card.id, v.k) ? 0 : 1);
+    }
+    refreshTile(tile, entry);
+    afterToggle();
+  }
+});
+
+function refreshTile(tile, entry) {
+  const html = tileHtml(entry, entry.tileOpts || {});
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  const fresh = wrap.firstElementChild;
+  if (entry.base) {
+    const any = entry.card.v.some((x) => qtyOf(entry.card.id, x.k));
+    fresh.classList.toggle('owned', any);
+  }
+  // keep the already-loaded image element to avoid flicker
+  const oldImg = tile.querySelector('.face img, .face .placeholder');
+  const newImg = fresh.querySelector('.face img, .face .placeholder');
+  if (oldImg && newImg) newImg.replaceWith(oldImg);
+  tile.replaceWith(fresh);
+}
+
+// --------------------------------------------------------------------------
+// Card detail modal
+// --------------------------------------------------------------------------
+function openCard(card, set) {
+  const render = () => {
+    const ownedAny = card.v.some((v) => qtyOf(card.id, v.k));
+    modal.innerHTML = `<button class="close" aria-label="Close">✕</button>
+    <div class="modal-body">
+      <div>${card.img ? `<img class="big card-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : `<div class="big" style="display:grid;place-items:center">${esc(card.name)}</div>`}</div>
+      <div>
+        <div class="muted">${esc(set.name)} · #${esc(card.n)}${set.official ? ' / ' + set.official : ''}</div>
+        <h2>${esc(card.name)}</h2>
+        <dl class="facts">
+          ${card.r ? `<dt>Rarity</dt><dd>${esc(card.r)}</dd>` : ''}
+          ${card.cat ? `<dt>Category</dt><dd>${esc(card.cat)}${card.ty ? ' · ' + card.ty.map(esc).join(', ') : ''}</dd>` : ''}
+          ${card.ill ? `<dt>Illustrator</dt><dd>${esc(card.ill)}</dd>` : ''}
+          <dt>Set</dt><dd><a href="#/set/${encodeURIComponent(set.id)}" data-close>${esc(set.name)}</a> <span class="muted">(${esc(set.seriesName)}, ${fmtDate(set.releaseDate)})</span></dd>
+          <dt>Status</dt><dd>${ownedAny ? '<span style="color:var(--green)">In your collection</span>' : '<span class="muted">Not owned</span>'}</dd>
+        </dl>
+        <h3 style="margin:18px 0 10px">Printings in the master set</h3>
+        <div class="variant-list">
+          ${card.v
+            .map((v) => {
+              const q = qtyOf(card.id, v.k);
+              return `<div class="variant-row${q ? ' owned' : ''}">
+                <div><div class="badges">${badgesHtml(v, card) || '<span class="badge">Normal</span>'}</div></div>
+                ${priceHtml(v)}
+                <div class="stepper" data-vk="${esc(v.k)}"><button data-d="-1" aria-label="Remove one">−</button><span>${q}</span><button data-d="1" aria-label="Add one">+</button></div>
+              </div>`;
+            })
+            .join('')}
+        </div>
+        <div class="ext-links">
+          <a class="btn sm" target="_blank" rel="noopener" href="https://www.tcgplayer.com/search/pokemon/product?q=${encodeURIComponent(card.name + ' ' + set.name)}">TCGplayer ↗</a>
+          <a class="btn sm" target="_blank" rel="noopener" href="https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${encodeURIComponent(card.name)}">Cardmarket ↗</a>
+          <a class="btn sm" target="_blank" rel="noopener" href="https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(`pokemon ${card.name} ${set.name} ${card.n}`)}&LH_Sold=1">eBay sold ↗</a>
+        </div>
+      </div>
+    </div>`;
+  };
+  render();
+  modal.onclick = (e) => {
+    if (e.target === modal || e.target.closest('.close') || e.target.closest('[data-close]')) return modal.close();
+    const b = e.target.closest('.stepper button');
+    if (b) {
+      const vk = b.parentElement.dataset.vk;
+      setQty(card.id, vk, Math.max(0, qtyOf(card.id, vk) + Number(b.dataset.d)));
+      render();
+      changedWhileModal = true;
+    }
+  };
+  changedWhileModal = false;
+  modal.showModal();
+}
+let changedWhileModal = false;
+modal.addEventListener('close', () => {
+  if (changedWhileModal) route(true);
+});
+
+// --------------------------------------------------------------------------
+// Pages
+// --------------------------------------------------------------------------
+async function pagePortfolio() {
+  const idx = await getIndex();
+  const owned = ownedBySet();
+  const ownedSetIds = [...owned.keys()].filter((id) => idx.byId.has(id));
+
+  if (!ownedSetIds.length) {
+    const featured = [...idx.sets].sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || '')).slice(0, 6);
+    app.innerHTML = `
+      <section class="hero">
+        <div class="hero-label">Your portfolio</div>
+        <div class="hero-value">${money(0)}</div>
+        <div class="hero-sub">Start tracking – every set from Base Set (1999) to today, with reverse holos, stamps and promos.</div>
+        <div class="stats">
+          <div class="stat"><b>${num(idx.sets.length)}</b><span>sets available</span></div>
+          <div class="stat"><b>${num(idx.sets.reduce((a, s) => a + s.total, 0))}</b><span>cards</span></div>
+          <div class="stat"><b>${num(idx.sets.reduce((a, s) => a + s.variants, 0))}</b><span>master-set printings</span></div>
+        </div>
+      </section>
+      <div class="empty"><h3>Your vault is empty</h3><p>Open a set and tap the cards you own – they light up in full colour.</p>
+        <a class="btn primary" href="#/sets">Browse sets →</a></div>
+      <h2 class="section">Latest sets</h2>
+      <div class="set-grid">${featured.map((s) => setCardHtml(s, 0)).join('')}</div>`;
+    return;
+  }
+
+  app.innerHTML = `<div class="load-progress">Valuing your collection…${bar(0)}</div>`;
+  const sets = await getSets(ownedSetIds, (d, t) => {
+    const b = app.querySelector('.load-progress .bar i');
+    if (b) b.style.width = `${(d / t) * 100}%`;
+  });
+
+  let total = 0, copies = 0, slots = 0, priced = 0;
+  const entries = [];
+  const perSet = [];
+  const perSeries = new Map();
+  for (const s of sets) {
+    let sOwned = 0, sValue = 0, sCards = 0;
+    for (const card of s.cards) {
+      let any = false;
+      for (const v of card.v) {
+        const q = qtyOf(card.id, v.k);
+        if (!q) continue;
+        any = true;
+        const p = priceNum(v);
+        sOwned++;
+        copies += q;
+        sValue += p * q;
+        if (p) priced++;
+        entries.push({ card, v, set: s, p, t: collection[keyOf(card.id, v.k)].t });
+      }
+      if (any) sCards++;
+    }
+    slots += sOwned;
+    total += sValue;
+    perSet.push({ s, sOwned, sValue, sCards });
+    const ser = perSeries.get(s.seriesName) || { v: 0, n: 0, order: idx.byId.get(s.id)?.seriesOrder ?? 99 };
+    ser.v += sValue;
+    ser.n += sOwned;
+    perSeries.set(s.seriesName, ser);
+  }
+  const complete = perSet.filter((x) => x.sOwned >= x.s.variants).length;
+  const top = [...entries].sort((a, b) => b.p - a.p).slice(0, 12);
+  const recent = [...entries].sort((a, b) => b.t - a.t).slice(0, 12);
+  const progress = [...perSet].sort((a, b) => b.sOwned / b.s.variants - a.sOwned / a.s.variants);
+  const series = [...perSeries.entries()].sort((a, b) => b[1].v - a[1].v);
+  const maxSeries = Math.max(1, ...series.map((x) => x[1].v));
+  const best = top[0];
+
+  gridLookup = new Map();
+  const reg = (e) => (gridLookup.set(keyOf(e.card.id, e.v.k), { ...e, tileOpts: { showSet: true } }), tileHtml(e, { showSet: true }));
+
+  app.innerHTML = `
+    <section class="hero">
+      <div class="hero-label">Total collection value</div>
+      <div class="hero-value">${money(total)}</div>
+      <div class="hero-sub">${prefs.currency === 'USD' ? 'TCGplayer market prices' : 'Cardmarket trend prices'} · ${num(priced)} of ${num(slots)} owned printings priced${best ? ` · Top card: <b>${esc(best.card.name)}</b> (${money(best.p)})` : ''}</div>
+      <div class="stats">
+        <div class="stat"><b>${num(slots)}</b><span>unique printings</span></div>
+        <div class="stat"><b>${num(copies)}</b><span>total cards incl. duplicates</span></div>
+        <div class="stat"><b>${num(sets.length)}</b><span>sets started</span></div>
+        <div class="stat"><b>${num(complete)}</b><span>master sets complete</span></div>
+        <div class="stat"><b>${money(slots ? total / copies : 0)}</b><span>average card value</span></div>
+      </div>
+    </section>
+
+    <h2 class="section">Most valuable cards <small>your top 12</small></h2>
+    <div class="card-grid">${top.map(reg).join('')}</div>
+
+    <div class="two-col">
+      <div>
+        <h2 class="section">Set progress <small>master set completion</small></h2>
+        <div class="progress-list">
+          ${progress
+            .map(({ s, sOwned, sValue, sCards }) => {
+              const p = pct(sOwned, s.variants);
+              return `<a class="progress-item" href="#/set/${encodeURIComponent(s.id)}">
+                ${s.logo ? `<img src="${esc(s.logo)}.webp" alt="" loading="lazy" data-fallback="">` : '<span></span>'}
+                <div><div class="name">${esc(s.name)}</div>${bar(p, p >= 100)}
+                  <div class="meta"><span>${num(sOwned)}/${num(s.variants)} printings · ${num(sCards)}/${num(s.total)} cards</span><span class="value">${money(sValue)}</span></div></div>
+                <div class="pct">${p}%</div></a>`;
+            })
+            .join('')}
+        </div>
+      </div>
+      <div>
+        <h2 class="section">Value by era</h2>
+        <div class="panel era-bars">
+          ${series
+            .map(([name, x]) => `<div class="era-row"><span>${esc(name)}</span>${bar((x.v / maxSeries) * 100)}<span class="value">${money(x.v, { compact: true })}</span></div>`)
+            .join('')}
+        </div>
+      </div>
+    </div>
+
+    <h2 class="section">Recently added</h2>
+    <div class="card-grid">${recent.map(reg).join('')}</div>`;
+  afterToggle = () => {};
+}
+
+function setCardHtml(s, ownedCount) {
+  const p = pct(ownedCount, s.variants);
+  const cls = p >= 100 ? 'complete' : ownedCount ? 'started' : '';
+  const value = prefs.currency === 'USD' ? s.valueUSD : s.valueEUR;
+  return `<a class="set-card ${cls}" href="#/set/${encodeURIComponent(s.id)}">
+    <div class="logo">${setLogo(s)}</div>
+    <div class="title">${s.symbol ? `<img src="${esc(s.symbol)}.webp" alt="" loading="lazy" data-fallback="">` : ''}<span>${esc(s.name)}</span></div>
+    <div class="sub"><span>${fmtDate(s.releaseDate)}${s.code ? ' · ' + esc(s.code) : ''}</span><span>${num(s.total)} cards</span></div>
+    ${bar(p, p >= 100)}
+    <div class="sub"><span>${num(ownedCount)}/${num(s.variants)} printings</span><span>${value ? `<span class="value">${money(value, { compact: true })}</span> set` : ''}</span></div>
+  </a>`;
+}
+
+async function pageSets() {
+  const idx = await getIndex();
+  const owned = ownedBySet();
+  app.innerHTML = `
+    <h1>All sets</h1>
+    <p class="muted">${num(idx.sets.length)} sets, grouped by era – including Black Star promos, trainer kits, McDonald's and special collections.</p>
+    <div class="toolbar">
+      <div class="grow"><input class="search" id="q" type="search" placeholder="Search sets…" autocomplete="off"></div>
+      <div class="seg" id="sfilter">
+        <button data-v="all">All</button><button data-v="started">Started</button><button data-v="promo">Promos</button>
+      </div>
+      <select id="ssort" aria-label="Sort sets">
+        <option value="newest">Newest first</option><option value="oldest">Oldest first</option>
+        <option value="progress">Most complete</option><option value="value">Most valuable set</option>
+      </select>
+    </div>
+    <div id="setlist"></div>`;
+  let filter = 'all';
+  const sortSel = $('#ssort');
+  sortSel.value = prefs.setsSort;
+  const draw = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    let list = idx.sets.filter((s) => !q || s.name.toLowerCase().includes(q) || s.seriesName.toLowerCase().includes(q) || (s.code || '').toLowerCase() === q);
+    if (filter === 'started') list = list.filter((s) => owned.get(s.id));
+    if (filter === 'promo') list = list.filter((s) => /promo/i.test(s.name));
+    const sort = prefs.setsSort;
+    const val = (s) => (prefs.currency === 'USD' ? s.valueUSD : s.valueEUR) || 0;
+    const html = [];
+    if (sort === 'newest' || sort === 'oldest') {
+      const dir = sort === 'newest' ? -1 : 1;
+      const groups = new Map();
+      for (const s of list) {
+        if (!groups.has(s.series)) groups.set(s.series, { name: s.seriesName, sets: [], date: s.releaseDate || '' });
+        const g = groups.get(s.series);
+        g.sets.push(s);
+        if ((s.releaseDate || '') < g.date) g.date = s.releaseDate;
+      }
+      const gs = [...groups.values()].sort((a, b) => dir * a.date.localeCompare(b.date));
+      for (const g of gs) {
+        g.sets.sort((a, b) => dir * (a.releaseDate || '').localeCompare(b.releaseDate || ''));
+        const o = g.sets.reduce((a, s) => a + (owned.get(s.id) || 0), 0);
+        const t = g.sets.reduce((a, s) => a + s.variants, 0);
+        html.push(`<section class="series-block"><div class="series-head"><h2>${esc(g.name)}</h2><span class="muted">${g.sets.length} sets · ${num(o)}/${num(t)} printings</span></div>
+          <div class="set-grid">${g.sets.map((s) => setCardHtml(s, owned.get(s.id) || 0)).join('')}</div></section>`);
+      }
+    } else {
+      const key = sort === 'value' ? (s) => val(s) : (s) => (owned.get(s.id) || 0) / s.variants;
+      list = [...list].sort((a, b) => key(b) - key(a));
+      html.push(`<div class="set-grid">${list.map((s) => setCardHtml(s, owned.get(s.id) || 0)).join('')}</div>`);
+    }
+    $('#setlist').innerHTML = html.join('') || '<div class="empty"><h3>No sets match</h3></div>';
+  };
+  const seg = $('#sfilter');
+  const markSeg = () => seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === filter));
+  seg.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    filter = b.dataset.v;
+    markSeg();
+    draw();
+  };
+  sortSel.onchange = () => {
+    prefs.setsSort = sortSel.value;
+    savePrefs();
+    draw();
+  };
+  $('#q').oninput = draw;
+  markSeg();
+  draw();
+}
+
+async function pageSet(id) {
+  const idx = await getIndex();
+  loading('Loading set…');
+  let set;
+  try {
+    set = await getSet(id);
+  } catch {
+    app.innerHTML = `<div class="empty"><h3>Set not found</h3><a class="btn" href="#/sets">Back to sets</a></div>`;
+    return;
+  }
+  const meta = idx.byId.get(id) || set;
+
+  app.innerHTML = `
+    <a class="back" href="#/sets">← All sets</a>
+    <section class="panel">
+      <div class="set-header">
+        <div>${set.logo ? `<img class="logo" src="${esc(set.logo)}.webp" alt="${esc(set.name)}" data-fallback="${esc(set.name)}">` : ''}</div>
+        <div>
+          <h1>${esc(set.name)}</h1>
+          <div class="meta"><span>${esc(set.seriesName)}</span><span>Released ${fmtDate(set.releaseDate)}</span>${set.code ? `<span>Code ${esc(set.code)}</span>` : ''}<span>${set.official} official + ${Math.max(0, set.total - set.official)} secret</span></div>
+        </div>
+        <div id="ring"></div>
+      </div>
+      <div class="set-stats" id="setstats"></div>
+    </section>
+    <div class="toolbar">
+      <div class="seg" id="mode" title="Master set shows every printing (reverse holos, stamps…); Base set shows one per card number">
+        <button data-v="master">Master set</button><button data-v="base">Base set</button>
+      </div>
+      <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
+      <select id="sort" aria-label="Sort cards">
+        <option value="number">Set order</option><option value="value-desc">Value: high → low</option>
+        <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
+      </select>
+      <div class="grow"><input class="search" id="q" type="search" placeholder="Search name or number…" autocomplete="off"></div>
+      <span class="count" id="count"></span>
+      <button class="btn sm" id="bulk-own" title="Mark every card currently shown as owned">✓ Own shown</button>
+      <button class="btn sm danger" id="bulk-clear" title="Remove every card currently shown from your collection">Clear shown</button>
+    </div>
+    <div class="card-grid" id="grid"></div>`;
+
+  let shown = [];
+  const stats = () => {
+    let o = 0, cards = 0, vOwned = 0, vTotal = 0;
+    for (const c of set.cards) {
+      let any = false;
+      for (const v of c.v) {
+        const p = priceNum(v);
+        vTotal += p;
+        const q = qtyOf(c.id, v.k);
+        if (q) {
+          o++;
+          any = true;
+          vOwned += p * q;
+        }
+      }
+      if (any) cards++;
+    }
+    const mp = pct(o, set.variants);
+    const bp = pct(cards, set.total);
+    const officialOwned = set.cards.filter((c, i) => i < set.official && c.v.some((v) => qtyOf(c.id, v.k))).length;
+    $('#ring').innerHTML = ring(prefs.mode === 'master' ? mp : bp);
+    $('#setstats').innerHTML = `
+      <div class="stat"><b>${num(o)} / ${num(set.variants)}</b><span>Master set printings</span>${bar(mp, mp >= 100)}</div>
+      <div class="stat"><b>${num(cards)} / ${num(set.total)}</b><span>Unique cards (incl. secret rares)</span>${bar(bp, bp >= 100)}</div>
+      <div class="stat"><b>${num(officialOwned)} / ${num(set.official)}</b><span>Official set (${set.official} numbered)</span>${bar(pct(officialOwned, set.official), officialOwned >= set.official)}</div>
+      <div class="stat"><b class="value">${money(vOwned)}</b><span>Your value · master set ≈ ${money(vTotal, { compact: true })}</span></div>`;
+  };
+
+  const draw = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    const base = prefs.mode === 'base';
+    let list = [];
+    for (const card of set.cards) {
+      if (q && !card.name.toLowerCase().includes(q) && card.n.toLowerCase() !== q && !(card.n.replace(/^0+/, '') === q.replace(/^0+/, ''))) continue;
+      if (base) {
+        const ownedV = card.v.find((v) => qtyOf(card.id, v.k));
+        list.push({ card, v: ownedV || card.v[0], set, base: true, maxP: Math.max(0, ...card.v.map(priceNum)) });
+      } else for (const v of card.v) list.push({ card, v, set });
+    }
+    const isOwned = (e) => (e.base ? e.card.v.some((v) => qtyOf(e.card.id, v.k)) : qtyOf(e.card.id, e.v.k) > 0);
+    if (prefs.filter === 'owned') list = list.filter(isOwned);
+    if (prefs.filter === 'missing') list = list.filter((e) => !isOwned(e));
+    const pv = (e) => (e.base ? e.maxP : priceNum(e.v));
+    if (prefs.sort === 'value-desc') list.sort((a, b) => pv(b) - pv(a));
+    else if (prefs.sort === 'value-asc') list.sort((a, b) => (pv(a) || Infinity) - (pv(b) || Infinity));
+    else if (prefs.sort === 'name') list.sort((a, b) => a.card.name.localeCompare(b.card.name) || a.card.idx - b.card.idx);
+    shown = list;
+    gridLookup = new Map();
+    const html = list.map((e) => {
+      const k = keyOf(e.card.id, e.v.k);
+      gridLookup.set(k, e);
+      return tileHtml(e, e.base ? { anyOwned: isOwned(e) } : {});
+    });
+    $('#grid').innerHTML = html.join('') || '<div class="empty" style="grid-column:1/-1"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
+    $('#count').textContent = `${num(list.length)} shown`;
+    stats();
+  };
+
+  const bindSeg = (elId, prop) => {
+    const seg = $('#' + elId);
+    const mark = () => seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === prefs[prop]));
+    seg.onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      prefs[prop] = b.dataset.v;
+      savePrefs();
+      mark();
+      draw();
+    };
+    mark();
+  };
+  bindSeg('mode', 'mode');
+  bindSeg('filter', 'filter');
+  const sortSel = $('#sort');
+  sortSel.value = prefs.sort;
+  sortSel.onchange = () => {
+    prefs.sort = sortSel.value;
+    savePrefs();
+    draw();
+  };
+  $('#q').oninput = draw;
+  $('#bulk-own').onclick = () => {
+    if (!shown.length) return;
+    if (!confirm(`Mark all ${shown.length} shown cards as owned?`)) return;
+    for (const e of shown) if (!qtyOf(e.card.id, e.v.k)) setQty(e.card.id, e.v.k, 1);
+    draw();
+    toast(`Added ${shown.length} cards`);
+  };
+  $('#bulk-clear').onclick = () => {
+    if (!shown.length) return;
+    if (!confirm(`Remove all ${shown.length} shown cards from your collection?`)) return;
+    for (const e of shown) (e.base ? e.card.v : [e.v]).forEach((v) => setQty(e.card.id, v.k, 0));
+    draw();
+    toast('Cleared');
+  };
+  afterToggle = () => {
+    stats();
+    if (prefs.filter !== 'all') {
+      // the toggled card no longer matches the filter – redraw after a beat
+      clearTimeout(afterToggle.t);
+      afterToggle.t = setTimeout(draw, 450);
+    }
+  };
+  document.title = `${set.name} – PokéVault`;
+  draw();
+}
+
+async function pageCards() {
+  const idx = await getIndex();
+  app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every set, ranked by value.</p>
+    <div class="load-progress" id="lp">Loading ${num(idx.sets.length)} sets…${bar(0)}</div>`;
+  const sets = await getSets(idx.sets.map((s) => s.id), (d, t) => {
+    const b = app.querySelector('#lp .bar i');
+    if (b) b.style.width = `${(d / t) * 100}%`;
+  });
+  if (location.hash.split('?')[0] !== '#/cards') return; // navigated away meanwhile
+  const all = [];
+  for (const s of sets) for (const card of s.cards) for (const v of card.v) all.push({ card, v, set: s });
+  const seriesList = [...new Map(idx.sets.map((s) => [s.series, s.seriesName])).entries()];
+
+  app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every set (${num(all.length)} in total), sorted across sets.</p>
+    <div class="toolbar">
+      <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card, e.g. Charizard…" autocomplete="off"></div>
+      <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
+      <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
+      <select id="sort" aria-label="Sort">
+        <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option>
+        <option value="name">Name A–Z</option><option value="newest">Newest set first</option><option value="oldest">Oldest set first</option>
+      </select>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="card-grid" id="grid"></div>
+    <div class="more"><button class="btn" id="more">Show more</button></div>`;
+
+  const PAGE = 120;
+  let list = [], limit = PAGE;
+  const filterSeg = $('#filter');
+  const sortSel = $('#sort');
+  const seriesSel = $('#series');
+  sortSel.value = prefs.exSort;
+  seriesSel.value = prefs.exSeries;
+  const compute = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    list = all.filter((e) => {
+      if (prefs.exSeries !== 'all' && e.set.series !== prefs.exSeries) return false;
+      if (q && !e.card.name.toLowerCase().includes(q) && !e.set.name.toLowerCase().includes(q)) return false;
+      if (prefs.exFilter === 'owned' && !qtyOf(e.card.id, e.v.k)) return false;
+      if (prefs.exFilter === 'missing' && qtyOf(e.card.id, e.v.k)) return false;
+      return true;
+    });
+    const s = prefs.exSort;
+    if (s === 'value-desc') list.sort((a, b) => priceNum(b.v) - priceNum(a.v));
+    else if (s === 'value-asc') list.sort((a, b) => (priceNum(a.v) || Infinity) - (priceNum(b.v) || Infinity));
+    else if (s === 'name') list.sort((a, b) => a.card.name.localeCompare(b.card.name));
+    else {
+      const dir = s === 'newest' ? -1 : 1;
+      list.sort((a, b) => dir * (a.set.releaseDate || '').localeCompare(b.set.releaseDate || '') || a.card.idx - b.card.idx);
+    }
+    limit = PAGE;
+    render();
+  };
+  const render = () => {
+    gridLookup = new Map();
+    const slice = list.slice(0, limit);
+    $('#grid').innerHTML =
+      slice
+        .map((e) => {
+          gridLookup.set(keyOf(e.card.id, e.v.k), { ...e, tileOpts: { showSet: true } });
+          return tileHtml(e, { showSet: true });
+        })
+        .join('') || '<div class="empty" style="grid-column:1/-1"><h3>No cards match</h3></div>';
+    const owned = prefs.exFilter === 'owned' ? list.reduce((a, e) => a + priceNum(e.v) * qtyOf(e.card.id, e.v.k), 0) : null;
+    $('#count').innerHTML = `${num(list.length)} printings${owned != null ? ` · <span class="value">${money(owned)}</span>` : ''}`;
+    $('#more').style.display = list.length > limit ? '' : 'none';
+  };
+  const mark = () => filterSeg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === prefs.exFilter));
+  filterSeg.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    prefs.exFilter = b.dataset.v;
+    savePrefs();
+    mark();
+    compute();
+  };
+  sortSel.onchange = () => ((prefs.exSort = sortSel.value), savePrefs(), compute());
+  seriesSel.onchange = () => ((prefs.exSeries = seriesSel.value), savePrefs(), compute());
+  let t;
+  $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
+  $('#more').onclick = () => ((limit += PAGE), render());
+  afterToggle = () => {};
+  mark();
+  compute();
+}
+
+async function pageSettings() {
+  const idx = await getIndex();
+  const n = Object.keys(collection).length;
+  app.innerHTML = `<h1>Settings</h1>
+    <div class="settings" style="margin-top:20px">
+      <section class="panel"><h3>Back up your collection</h3>
+        <p>Your collection (${num(n)} printings) is saved in this browser only. Export it to a file to keep it safe or move it to another device.</p>
+        <div class="row"><button class="btn primary" id="export">⬇ Export collection</button>
+        <label class="btn">⬆ Import file<input type="file" id="import" accept="application/json,.json" hidden></label></div>
+      </section>
+      <section class="panel"><h3>Prices</h3>
+        <p>US dollars use TCGplayer market prices, euros use Cardmarket trend prices. When a printing has no price in the selected market it is converted from the other one and marked with ≈.
+        Prices were last updated <b>${INDEX.updated ? new Date(idx.updated).toLocaleString() : 'unknown'}</b>.</p>
+      </section>
+      <section class="panel"><h3>Display</h3>
+        <p>Card size in grids.</p>
+        <div class="row"><input type="range" id="tile" min="110" max="260" step="10" value="${prefs.tile}" style="flex:1"><span id="tilev">${prefs.tile}px</span></div>
+      </section>
+      <section class="panel"><h3>Reset</h3><p>Remove every card from your collection on this device.</p>
+        <button class="btn danger" id="reset">Delete my collection</button></section>
+    </div>`;
+  $('#export').onclick = () => {
+    const blob = new Blob([JSON.stringify({ app: 'pokevault', version: 1, exported: new Date().toISOString(), collection }, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `pokevault-collection-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $('#import').onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      const incoming = data.collection || data;
+      if (typeof incoming !== 'object') throw new Error();
+      const replace = confirm('Replace your current collection with this file?\n\nOK = replace, Cancel = merge into current collection');
+      if (replace) collection = {};
+      let added = 0;
+      for (const [k, v] of Object.entries(incoming)) {
+        const q = typeof v === 'number' ? v : Number(v?.q);
+        if (!k.includes('|') || !(q > 0)) continue;
+        collection[k] = { q: Math.max(q, collection[k]?.q || 0), t: v?.t || Date.now() };
+        added++;
+      }
+      saveCollection();
+      toast(`Imported ${added} printings`);
+      pageSettings();
+    } catch {
+      toast('That file is not a PokéVault backup');
+    }
+  };
+  $('#tile').oninput = (e) => {
+    prefs.tile = Number(e.target.value);
+    $('#tilev').textContent = prefs.tile + 'px';
+    applyTile();
+    savePrefs();
+  };
+  $('#reset').onclick = () => {
+    if (!confirm('Delete your whole collection from this browser? This cannot be undone (export first!).')) return;
+    collection = {};
+    saveCollection();
+    toast('Collection deleted');
+    pageSettings();
+  };
+}
+
+// --------------------------------------------------------------------------
+// Router
+// --------------------------------------------------------------------------
+function applyTile() {
+  document.documentElement.style.setProperty('--tile', prefs.tile + 'px');
+}
+function markCurrency() {
+  document.querySelectorAll('.currency button').forEach((b) => b.classList.toggle('on', b.dataset.cur === prefs.currency));
+}
+document.querySelector('.currency').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.dataset.cur === prefs.currency) return;
+  prefs.currency = b.dataset.cur;
+  savePrefs();
+  markCurrency();
+  route(true);
+});
+
+let lastHash = null;
+async function route(keepScroll = false) {
+  const hash = location.hash || '#/';
+  const [, page, arg] = hash.split('?')[0].split('/');
+  const name = page || 'portfolio';
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (name === 'set' ? 'sets' : name)));
+  document.title = 'PokéVault – Card Set Tracker';
+  const y = window.scrollY;
+  if (modal.open) modal.close();
+  try {
+    if (name === 'portfolio' || name === '') await pagePortfolio();
+    else if (name === 'sets') await pageSets();
+    else if (name === 'set') await pageSet(decodeURIComponent(arg || ''));
+    else if (name === 'cards') await pageCards();
+    else if (name === 'settings') await pageSettings();
+    else await pagePortfolio();
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = `<div class="empty"><h3>Something went wrong</h3><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Reload</button></div>`;
+  }
+  if (keepScroll && hash === lastHash) window.scrollTo(0, y);
+  else window.scrollTo(0, 0);
+  lastHash = hash;
+}
+window.addEventListener('hashchange', () => route());
+// keep tabs in sync if the collection is edited in another tab
+window.addEventListener('storage', (e) => {
+  if (e.key === LS_COLLECTION) {
+    collection = load(LS_COLLECTION, {});
+    route(true);
+  }
+});
+
+applyTile();
+markCurrency();
+route();
