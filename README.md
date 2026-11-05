@@ -14,7 +14,14 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
 - **Owned cards in full colour, missing cards dimmed** – click a card to mark it owned; use the **i**
   button to set quantities for each printing.
 - **Sort by value** – inside a set (Value high→low / low→high) and across *all* sets in the Card Explorer.
-- Master-set / base-set views, owned/missing filters, search, USD (TCGplayer) or EUR (Cardmarket) prices.
+- **Multi-select** – press *Select*, tap cards (Shift-click for a range, or *Select all shown*), then
+  *Mark owned* or *Remove* them in one go. Works on set pages and in the Card Explorer.
+- **Binder layouts** – view a set as binder pages: 4-pocket (2×2), 9-pocket (3×3), 12-pocket (4×3) or
+  16-pocket (4×4), with two-page spreads on wide screens.
+- **Prices in £ (default), $ or €** – pounds use Cardmarket prices at today's exchange rate, dollars use TCGplayer.
+  Set pages and the portfolio load live prices when opened (cached for 12 hours).
+- Master-set / base-set views, owned/missing filters and search. Your collection and settings
+  (currency, layout, filters) are remembered in your browser.
 - Export/import your collection as JSON (it is stored in your browser's localStorage).
 
 ## Running it

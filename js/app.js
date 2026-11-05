@@ -8,7 +8,9 @@ const modal = $('#modal');
 
 const LS_COLLECTION = 'pokevault.collection.v1';
 const LS_PREFS = 'pokevault.prefs.v1';
-const EUR_TO_USD = 1.1; // used only when a price is missing in the selected currency
+// Exchange rates per 1 EUR. Defaults are replaced by today's ECB rates (frankfurter.dev).
+const LS_FX = 'pokevault.fx.v1';
+let FX = { USD: 1.12, GBP: 0.84, date: null, t: 0 };
 
 // --------------------------------------------------------------------------
 // Storage
@@ -32,10 +34,33 @@ function save(key, value) {
 /** collection: { "<cardId>|<variantKey>": { q: quantity, t: addedTimestamp } } */
 let collection = load(LS_COLLECTION, {});
 const prefs = Object.assign(
-  { currency: 'USD', mode: 'master', filter: 'all', sort: 'number', exSort: 'value-desc', exFilter: 'all', exSeries: 'all', setsSort: 'newest', tile: 160 },
+  { currency: 'GBP', mode: 'master', layout: 'grid', filter: 'all', sort: 'number', exSort: 'value-desc', exFilter: 'all', exSeries: 'all', setsSort: 'newest', tile: 160 },
   load(LS_PREFS, {}),
 );
+// one-off move to pounds as the default currency
+if (!prefs.cv) {
+  prefs.currency = 'GBP';
+  prefs.cv = 1;
+}
 const savePrefs = () => save(LS_PREFS, prefs);
+FX = Object.assign(FX, load(LS_FX, {}));
+
+/** Refresh exchange rates at most every 12 hours. Returns true if they changed. */
+async function loadRates() {
+  if (Date.now() - FX.t < 12 * 60 * 60 * 1000) return false;
+  try {
+    const r = await fetch('https://api.frankfurter.dev/v1/latest?base=EUR&symbols=GBP,USD');
+    if (!r.ok) return false;
+    const d = await r.json();
+    if (!d.rates?.GBP || !d.rates?.USD) return false;
+    const changed = Math.abs(d.rates.GBP - FX.GBP) > 0.001 || Math.abs(d.rates.USD - FX.USD) > 0.001;
+    FX = { USD: d.rates.USD, GBP: d.rates.GBP, date: d.date, t: Date.now() };
+    save(LS_FX, FX);
+    return changed;
+  } catch {
+    return false;
+  }
+}
 const saveCollection = () => save(LS_COLLECTION, collection);
 
 const keyOf = (cardId, vk) => `${cardId}|${vk}`;
@@ -259,15 +284,22 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 /** price of a variant in the chosen currency → { v: number|null, approx: bool } */
 function priceOf(v) {
-  if (prefs.currency === 'USD') {
+  const cur = prefs.currency;
+  if (cur === 'USD') {
     if (v.u != null) return { v: v.u, approx: false };
-    if (v.e != null) return { v: v.e * EUR_TO_USD, approx: true };
+    if (v.e != null) return { v: v.e * FX.USD, approx: true };
   } else {
-    if (v.e != null) return { v: v.e, approx: false };
-    if (v.u != null) return { v: v.u / EUR_TO_USD, approx: true };
+    // EUR and GBP both come from Cardmarket (GBP converted at today's rate)
+    const k = cur === 'GBP' ? FX.GBP : 1;
+    if (v.e != null) return { v: v.e * k, approx: false };
+    if (v.u != null) return { v: (v.u / FX.USD) * k, approx: true };
   }
   return { v: null, approx: false };
 }
+/** whole-set value from the set index, in the chosen currency */
+const setValue = (s) => (prefs.currency === 'USD' ? s.valueUSD : prefs.currency === 'GBP' ? (s.valueEUR || 0) * FX.GBP : s.valueEUR) || 0;
+const priceSource = () =>
+  prefs.currency === 'USD' ? 'TCGplayer market prices' : prefs.currency === 'GBP' ? 'Cardmarket prices in pounds' : 'Cardmarket trend prices';
 const priceNum = (v) => priceOf(v).v ?? 0;
 
 function money(n, { compact = false } = {}) {
@@ -380,7 +412,8 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
   const q = qtyOf(card.id, v.k);
   const owned = anyOwned ?? q > 0;
   const k = keyOf(card.id, v.k);
-  return `<div class="tile${owned ? ' owned' : ''}${isFoil(v) ? ' foil' : ''}" data-key="${esc(k)}">
+  return `<div class="tile${owned ? ' owned' : ''}${isFoil(v) ? ' foil' : ''}${selected.has(k) ? ' sel' : ''}" data-key="${esc(k)}">
+    <span class="selmark" aria-hidden="true"></span>
     <div class="fw"><button class="face" data-act="toggle" aria-pressed="${owned}" title="${owned ? 'Owned – click to remove' : 'Click to mark as owned'}">
       ${card.img ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder">${esc(card.name)}</div>`}
       <span class="check" aria-hidden="true">✓</span>
@@ -393,9 +426,37 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
   </div>`;
 }
 
-// Delegated grid clicks (toggle ownership / open details)
+const BINDERS = { '2x2': [2, 2], '3x3': [3, 3], '4x3': [4, 3], '4x4': [4, 4] };
+/** Wrap tile HTML in a plain grid, or in binder pages (two pages per spread). */
+function layoutHtml(tiles, layout) {
+  const b = BINDERS[layout];
+  if (!b) return `<div class="card-grid">${tiles.join('')}</div>`;
+  const [cols, rows] = b;
+  const per = cols * rows;
+  const pages = [];
+  for (let i = 0; i < tiles.length; i += per) {
+    const pocketTiles = tiles.slice(i, i + per);
+    while (pocketTiles.length < per) pocketTiles.push('<div class="pocket-empty" aria-hidden="true"></div>');
+    pages.push(pocketTiles);
+  }
+  let html = '';
+  for (let p = 0; p < pages.length; p += 2) {
+    html += '<div class="spread">';
+    for (const [j, pg] of pages.slice(p, p + 2).entries())
+      html += `<section class="bpage" style="--cols:${cols}" aria-label="Binder page ${p + j + 1}"><div class="bgrid">${pg.join('')}</div><div class="pno">Page ${p + j + 1}</div></section>`;
+    html += '</div>';
+  }
+  return `<div class="binder b${cols}x${rows}">${html}<p class="muted binder-note">${pages.length} pages · ${per}-pocket binder</p></div>`;
+}
+
+// Delegated grid clicks (toggle ownership / select / open details)
 let gridLookup = new Map(); // key -> {card, v, set}
 let afterToggle = () => {};
+let redrawPage = null; // set by pages that support multi-select
+let selectMode = false;
+const selected = new Set();
+let lastSelKey = null;
+
 app.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
@@ -404,6 +465,19 @@ app.addEventListener('click', (e) => {
   const entry = gridLookup.get(tile.dataset.key);
   if (!entry) return;
   if (btn.dataset.act === 'info') return openCard(entry.card, entry.set);
+  if (btn.dataset.act === 'toggle' && selectMode) {
+    const k = tile.dataset.key;
+    if (e.shiftKey && lastSelKey && lastSelKey !== k) {
+      // shift-click: select everything between the last clicked card and this one
+      const keys = [...app.querySelectorAll('.tile[data-key]')].map((t) => t.dataset.key);
+      const a = keys.indexOf(lastSelKey), b = keys.indexOf(k);
+      if (a >= 0 && b >= 0) for (const key of keys.slice(Math.min(a, b), Math.max(a, b) + 1)) selected.add(key);
+    } else if (selected.has(k)) selected.delete(k);
+    else selected.add(k);
+    lastSelKey = k;
+    syncSelection();
+    return;
+  }
   if (btn.dataset.act === 'toggle') {
     const { card, v } = entry;
     if (entry.base) {
@@ -418,6 +492,66 @@ app.addEventListener('click', (e) => {
     afterToggle();
   }
 });
+
+// ---- multi-select bar ----
+const selbar = $('#selbar');
+function setSelectMode(on) {
+  selectMode = on;
+  if (!on) selected.clear();
+  lastSelKey = null;
+  document.body.classList.toggle('selecting', on);
+  const b = $('#selbtn');
+  if (b) {
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on);
+  }
+  syncSelection();
+}
+function syncSelection() {
+  app.querySelectorAll('.tile[data-key]').forEach((t) => t.classList.toggle('sel', selected.has(t.dataset.key)));
+  selbar.hidden = !selectMode;
+  const n = selected.size;
+  $('#selcount').textContent = n ? `${num(n)} selected` : 'Tap cards to select them · Shift-click selects a range';
+  selbar.querySelectorAll('[data-need]').forEach((b) => (b.disabled = !n));
+}
+selbar.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const act = b.dataset.sel;
+  if (act === 'done') return setSelectMode(false);
+  if (act === 'all') {
+    app.querySelectorAll('.tile[data-key]').forEach((t) => gridLookup.has(t.dataset.key) && selected.add(t.dataset.key));
+    return syncSelection();
+  }
+  if (act === 'none') return (selected.clear(), syncSelection());
+  if (act === 'own' || act === 'remove') {
+    let n = 0;
+    for (const k of selected) {
+      const entry = gridLookup.get(k);
+      if (!entry) continue;
+      const { card, v } = entry;
+      if (act === 'own') {
+        const has = entry.base ? card.v.some((x) => qtyOf(card.id, x.k)) : qtyOf(card.id, v.k);
+        if (!has) (setQty(card.id, v.k, 1), n++);
+      } else {
+        for (const x of entry.base ? card.v : [v]) if (qtyOf(card.id, x.k)) (setQty(card.id, x.k, 0), n++);
+      }
+    }
+    toast(act === 'own' ? `Added ${num(n)} cards to your collection` : `Removed ${num(n)} cards`);
+    selected.clear();
+    redrawPage?.();
+    syncSelection();
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && selectMode && !modal.open) setSelectMode(false);
+});
+/** wire up a page's "Select" button */
+function bindSelectButton() {
+  const b = $('#selbtn');
+  if (b) b.onclick = () => setSelectMode(!selectMode);
+  setSelectMode(false);
+}
 
 function refreshTile(tile, entry) {
   const html = tileHtml(entry, entry.tileOpts || {});
@@ -572,7 +706,7 @@ async function pagePortfolio() {
     <section class="hero">
       <div class="hero-label">Total collection value</div>
       <div class="hero-value">${money(total)}</div>
-      <div class="hero-sub">${prefs.currency === 'USD' ? 'TCGplayer market prices' : 'Cardmarket trend prices'} · ${num(priced)} of ${num(slots)} owned printings priced${best ? ` · Top card: <b>${esc(best.card.name)}</b> (${money(best.p)})` : ''}</div>
+      <div class="hero-sub">${priceSource()} · ${num(priced)} of ${num(slots)} owned printings priced${best ? ` · Top card: <b>${esc(best.card.name)}</b> (${money(best.p)})` : ''}</div>
       <div class="live" id="live"></div>
       <div class="stats">
         <div class="stat"><b>${num(slots)}</b><span>unique printings</span></div>
@@ -622,7 +756,7 @@ async function pagePortfolio() {
 function setCardHtml(s, ownedCount) {
   const p = pct(ownedCount, s.variants);
   const cls = p >= 100 ? 'complete' : ownedCount ? 'started' : '';
-  const value = prefs.currency === 'USD' ? s.valueUSD : s.valueEUR;
+  const value = setValue(s);
   return `<a class="set-card ${cls}" href="#/set/${encodeURIComponent(s.id)}">
     <div class="logo">${setLogo(s)}</div>
     <div class="title">${s.symbol ? `<img src="${esc(s.symbol)}.webp" alt="" loading="lazy" data-fallback="">` : ''}<span>${esc(s.name)}</span></div>
@@ -658,7 +792,7 @@ async function pageSets() {
     if (filter === 'started') list = list.filter((s) => owned.get(s.id));
     if (filter === 'promo') list = list.filter((s) => /promo/i.test(s.name));
     const sort = prefs.setsSort;
-    const val = (s) => (prefs.currency === 'USD' ? s.valueUSD : s.valueEUR) || 0;
+    const val = setValue;
     const html = [];
     if (sort === 'newest' || sort === 'oldest') {
       const dir = sort === 'newest' ? -1 : 1;
@@ -739,11 +873,17 @@ async function pageSet(id) {
         <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
       </select>
       <div class="grow"><input class="search" id="q" type="search" placeholder="Search name or number…" autocomplete="off"></div>
+      <select id="layout" aria-label="Layout" title="Show the set as binder pages">
+        <option value="grid">Grid</option>
+        <option value="2x2">Binder · 4-pocket (2×2)</option>
+        <option value="3x3">Binder · 9-pocket (3×3)</option>
+        <option value="4x3">Binder · 12-pocket (4×3)</option>
+        <option value="4x4">Binder · 16-pocket (4×4)</option>
+      </select>
       <span class="count" id="count"></span>
-      <button class="btn sm" id="bulk-own" title="Mark every card currently shown as owned">✓ Own shown</button>
-      <button class="btn sm danger" id="bulk-clear" title="Remove every card currently shown from your collection">Clear shown</button>
+      <button class="btn sm" id="selbtn" aria-pressed="false" title="Select several cards, then add or remove them together">☐ Select</button>
     </div>
-    <div class="card-grid" id="grid"></div>`;
+    <div id="grid"></div>`;
 
   let shown = [];
   const stats = () => {
@@ -798,7 +938,9 @@ async function pageSet(id) {
       gridLookup.set(k, e);
       return tileHtml(e, e.base ? { anyOwned: isOwned(e) } : {});
     });
-    $('#grid').innerHTML = html.join('') || '<div class="empty" style="grid-column:1/-1"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
+    $('#grid').innerHTML = list.length
+      ? layoutHtml(html, prefs.layout)
+      : '<div class="empty"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
     $('#count').textContent = `${num(list.length)} shown`;
     stats();
   };
@@ -826,20 +968,15 @@ async function pageSet(id) {
     draw();
   };
   $('#q').oninput = draw;
-  $('#bulk-own').onclick = () => {
-    if (!shown.length) return;
-    if (!confirm(`Mark all ${shown.length} shown cards as owned?`)) return;
-    for (const e of shown) if (!qtyOf(e.card.id, e.v.k)) setQty(e.card.id, e.v.k, 1);
+  const layoutSel = $('#layout');
+  layoutSel.value = prefs.layout;
+  layoutSel.onchange = () => {
+    prefs.layout = layoutSel.value;
+    savePrefs();
     draw();
-    toast(`Added ${shown.length} cards`);
   };
-  $('#bulk-clear').onclick = () => {
-    if (!shown.length) return;
-    if (!confirm(`Remove all ${shown.length} shown cards from your collection?`)) return;
-    for (const e of shown) (e.base ? e.card.v : [e.v]).forEach((v) => setQty(e.card.id, v.k, 0));
-    draw();
-    toast('Cleared');
-  };
+  bindSelectButton();
+  redrawPage = draw;
   afterToggle = () => {
     stats();
     if (prefs.filter !== 'all') {
@@ -876,6 +1013,7 @@ async function pageCards() {
         <option value="name">Name A–Z</option><option value="newest">Newest set first</option><option value="oldest">Oldest set first</option>
       </select>
       <span class="count" id="count"></span>
+      <button class="btn sm" id="selbtn" aria-pressed="false" title="Select several cards, then add or remove them together">☐ Select</button>
     </div>
     <div class="card-grid" id="grid"></div>
     <div class="more"><button class="btn" id="more">Show more</button></div>`;
@@ -934,8 +1072,10 @@ async function pageCards() {
   seriesSel.onchange = () => ((prefs.exSeries = seriesSel.value), savePrefs(), compute());
   let t;
   $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
-  $('#more').onclick = () => ((limit += PAGE), render());
+  $('#more').onclick = () => ((limit += PAGE), render(), syncSelection());
   afterToggle = () => {};
+  bindSelectButton();
+  redrawPage = render;
   mark();
   compute();
 }
@@ -951,8 +1091,11 @@ async function pageSettings() {
         <label class="btn">⬆ Import file<input type="file" id="import" accept="application/json,.json" hidden></label></div>
       </section>
       <section class="panel"><h3>Prices</h3>
-        <p>US dollars use TCGplayer market prices, euros use Cardmarket trend prices. When a printing has no price in the selected market it is converted from the other one and marked with ≈.
-        Prices were last updated <b>${INDEX.updated ? new Date(idx.updated).toLocaleString() : 'unknown'}</b>.</p>
+        <p><b>Pounds (default)</b> use Cardmarket prices converted at today's exchange rate (£1 = €${(1 / FX.GBP).toFixed(3)}${FX.date ? `, rate from ${new Date(FX.date).toLocaleDateString()}` : ''}).
+        <b>US dollars</b> use TCGplayer market prices and <b>euros</b> use Cardmarket trend prices.
+        When a printing has no price in the selected market it is converted from the other one and marked with ≈.</p>
+        <p>Set pages and your portfolio load live prices when you open them (kept for 12 hours). Everything else uses the saved prices from
+        <b>${idx.updated ? new Date(idx.updated).toLocaleString() : 'unknown'}</b>.</p>
       </section>
       <section class="panel"><h3>Display</h3>
         <p>Card size in grids.</p>
@@ -1029,6 +1172,11 @@ let lastHash = null;
 let routeSeq = 0;
 async function route(keepScroll = false) {
   routeSeq++;
+  const prevHash = lastHash;
+  if ((location.hash || '#/') !== prevHash) {
+    redrawPage = null;
+    if (selectMode) setSelectMode(false);
+  }
   const hash = location.hash || '#/';
   const [, page, arg] = hash.split('?')[0].split('/');
   const name = page || 'portfolio';
@@ -1063,3 +1211,7 @@ window.addEventListener('storage', (e) => {
 applyTile();
 markCurrency();
 route();
+// fetch today's exchange rates; re-render once if they changed and a converted currency is shown
+loadRates().then((changed) => {
+  if (changed && prefs.currency !== 'EUR') route(true);
+});

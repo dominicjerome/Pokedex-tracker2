@@ -25,8 +25,9 @@
       <a href="#/settings" data-route="settings">Settings</a>
     </nav>
     <div class="currency" role="group" aria-label="Currency">
-      <button data-cur="USD" title="TCGplayer market price (USD)">$</button>
-      <button data-cur="EUR" title="Cardmarket trend price (EUR)">€</button>
+      <button data-cur="GBP" title="Pounds – Cardmarket price at today's rate">£</button>
+      <button data-cur="USD" title="US dollars – TCGplayer market price">$</button>
+      <button data-cur="EUR" title="Euros – Cardmarket trend price">€</button>
     </div>
   </header>
 
@@ -35,6 +36,16 @@
   </main>
 
   <dialog id="modal" class="modal"></dialog>
+  <div id="selbar" class="selbar" hidden>
+    <span id="selcount" class="selcount"></span>
+    <div class="selactions">
+      <button class="btn sm" data-sel="all">Select all shown</button>
+      <button class="btn sm" data-sel="none" data-need>Clear selection</button>
+      <button class="btn sm primary" data-sel="own" data-need>✓ Mark owned</button>
+      <button class="btn sm danger" data-sel="remove" data-need>Remove</button>
+      <button class="btn sm" data-sel="done">Done</button>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <footer class="footer">
