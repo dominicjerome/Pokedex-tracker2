@@ -39,11 +39,13 @@ To publish on GitHub Pages: *Settings → Pages → Deploy from a branch* and pi
 
 ## Card data
 
-`data/` is generated from the free [TCGdex API](https://tcgdex.dev) by:
+`data/` is generated from the free [TCGdex API](https://tcgdex.dev), with cards TCGdex is missing (for example
+Sun & Moon "a" alternate prints and the 30th Celebration Mew B/G/R) filled in from [pokemontcg.io](https://pokemontcg.io), by:
 
 ```sh
 node scripts/build-data.mjs            # rebuild everything (~10 minutes)
 node scripts/build-data.mjs sv01 svp   # rebuild only some sets
+node scripts/fill-gaps.mjs             # only re-check pokemontcg.io for missing cards
 ```
 
 The `Refresh card data & prices` GitHub Action re-runs this every Monday (or on demand) and commits the

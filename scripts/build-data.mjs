@@ -11,6 +11,7 @@ import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fillGaps } from './fill-gaps.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'data');
@@ -252,6 +253,12 @@ async function main() {
     JSON.stringify({ updated: new Date().toISOString(), source: 'TCGdex (tcgdex.dev)', sets: all }, null, 0),
   );
   console.log(`Wrote ${all.length} sets`);
+  // add cards TCGdex is missing from pokemontcg.io (failure here keeps the TCGdex data)
+  try {
+    await fillGaps();
+  } catch (e) {
+    console.error('Filling gaps from pokemontcg.io failed:', e.message);
+  }
 }
 
 main().catch((e) => {

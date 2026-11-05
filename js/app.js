@@ -426,7 +426,7 @@ let liveDown = 0; // time of the last failure, to back off when TCGdex is unreac
  */
 async function refreshLive(cards, onProgress) {
   if (Date.now() - liveDown < 5 * 60 * 1000) return { updated: 0, failed: true };
-  const todo = cards.filter((c) => !liveFresh(c.id));
+  const todo = cards.filter((c) => !c.src && !liveFresh(c.id));
   let done = 0, updated = 0, failures = 0, i = 0;
   onProgress?.(0, todo.length);
   await Promise.all(
@@ -453,6 +453,7 @@ async function refreshLive(cards, onProgress) {
 
 /** Load live prices for `cards`, show progress in #live, call redraw() if anything changed. */
 function startLive(cards, redraw) {
+  cards = cards.filter((c) => !c.src); // cards from pokemontcg.io have no TCGdex live price
   const seq = routeSeq;
   const el = () => (seq === routeSeq ? $('#live') : null);
   const show = (html) => el() && (el().innerHTML = html);
@@ -550,7 +551,8 @@ function fmtDate(d) {
   const dt = new Date(d);
   return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
 }
-const imgUrl = (c, q = 'low') => (c.img ? `${c.img}/${q}.webp` : '');
+// TCGdex images take a quality suffix; cards filled in from pokemontcg.io carry full URLs
+const imgUrl = (c, q = 'low') => (c.img ? `${c.img}/${q}.webp` : (q === 'high' ? c.iml : c.ims) || '');
 
 const STAMP_NAMES = {
   '1st-edition': '1st Edition', 'pokemon-center': 'Pokémon Center', 'set-logo': 'Set Logo', staff: 'Staff', 'w-promo': 'W Promo',
@@ -645,7 +647,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
   return `<div class="tile${owned ? ' owned' : ''}${isFoil(v) ? ' foil' : ''}${selected.has(k) ? ' sel' : ''}" data-key="${esc(k)}">
     <span class="selmark" aria-hidden="true"></span>
     <div class="fw"><button class="face" data-act="toggle" aria-pressed="${owned}" title="${owned ? 'Owned – click to remove' : 'Click to mark as owned'}">
-      ${card.img ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder">${esc(card.name)}</div>`}
+      ${imgUrl(card) ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder">${esc(card.name)}</div>`}
       <span class="check" aria-hidden="true">✓</span>
       ${q > 1 ? `<span class="qty">×${q}</span>` : ''}
     </button>
@@ -908,7 +910,7 @@ function openCard(card, set) {
     const ownedAny = card.v.some((v) => qtyOf(card.id, v.k));
     modal.innerHTML = `<button class="close" aria-label="Close">✕</button>
     <div class="modal-body">
-      <div>${card.img ? `<img class="big card-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : `<div class="big" style="display:grid;place-items:center">${esc(card.name)}</div>`}</div>
+      <div>${imgUrl(card) ? `<img class="big card-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : `<div class="big" style="display:grid;place-items:center">${esc(card.name)}</div>`}</div>
       <div>
         <div class="muted">${esc(set.name)} · #${esc(card.n)}${set.official ? ' / ' + set.official : ''}</div>
         <h2>${esc(card.name)}</h2>
