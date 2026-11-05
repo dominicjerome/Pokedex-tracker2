@@ -330,3 +330,23 @@ body.selecting .toast { bottom: 110px; }
   .bpage .tile .row2 .badges { display: none; }
 }
 .selbar[hidden] { display: none; }
+
+/* ---------- sync ---------- */
+.syncchip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 0.82rem; font-weight: 500; white-space: nowrap; }
+.syncchip[hidden] { display: none; }
+.syncchip:hover { color: var(--text); border-color: var(--accent-3); }
+.syncchip i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+.syncchip.syncing i, .syncchip.pending i { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); animation: pulse 1s ease-in-out infinite; }
+.syncchip.error { color: var(--red); border-color: rgba(248, 113, 113, 0.5); }
+.syncchip.error i { background: var(--red); box-shadow: 0 0 8px var(--red); }
+@media (max-width: 640px) { .syncchip span { display: none; } .syncchip { padding: 9px; } }
+.steps { margin: 0 0 16px; padding-left: 20px; color: var(--muted); line-height: 1.7; }
+.steps b { color: var(--text); }
+.syncform { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.syncform label { display: grid; gap: 6px; font-size: 0.85rem; color: var(--muted); flex: 1 1 200px; }
+.syncform input { padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); min-width: 0; }
+.syncform input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.settings .small { font-size: 0.85rem; }
+.error { color: var(--red); }
+.error[hidden] { display: none; }
+code { font-size: 0.85em; background: var(--surface-3); padding: 1px 6px; border-radius: 6px; }

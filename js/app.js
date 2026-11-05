@@ -61,7 +61,20 @@ async function loadRates() {
     return false;
   }
 }
-const saveCollection = () => save(LS_COLLECTION, collection);
+// Removed cards are remembered ("tombstones") so a removal syncs to other devices.
+const LS_TOMBS = 'pokevault.deleted.v1';
+let tombs = load(LS_TOMBS, {}); // { key: removedAt }
+function saveCollection({ fromSync = false } = {}) {
+  save(LS_COLLECTION, collection);
+  save(LS_TOMBS, tombs);
+  if (!fromSync) Sync.changed();
+}
+/** remove everything (keeps tombstones so other devices remove it too) */
+function clearCollection() {
+  const now = Date.now();
+  for (const k of Object.keys(collection)) tombs[k] = now;
+  collection = {};
+}
 
 const keyOf = (cardId, vk) => `${cardId}|${vk}`;
 const qtyOf = (cardId, vk) => collection[keyOf(cardId, vk)]?.q || 0;
@@ -69,10 +82,227 @@ const setIdOfCard = (cardId) => cardId.slice(0, cardId.lastIndexOf('-'));
 
 function setQty(cardId, vk, q) {
   const k = keyOf(cardId, vk);
-  if (q > 0) collection[k] = { q, t: collection[k]?.t || Date.now() };
-  else delete collection[k];
+  const now = Date.now();
+  if (q > 0) {
+    collection[k] = { q, t: collection[k]?.t || now, m: now };
+    delete tombs[k];
+  } else if (collection[k]) {
+    delete collection[k];
+    tombs[k] = now;
+  }
   saveCollection();
 }
+
+// --------------------------------------------------------------------------
+// Sync across devices via a private GitHub Gist.
+// Each "profile" is its own file in one gist, so two people can keep separate
+// collections (own GitHub accounts, or one account with two profile names).
+// Merging is per card: the most recent change (add, quantity or removal) wins.
+// --------------------------------------------------------------------------
+const Sync = (() => {
+  const LS_SYNC = 'pokevault.sync.v1';
+  const API = 'https://api.github.com';
+  const DESC = 'PokéVault collection (synced by the PokéVault website)';
+  const TOMB_KEEP = 180 * 24 * 60 * 60 * 1000;
+  let cfg = load(LS_SYNC, null); // { token, profile, login, gistId, last }
+  let state = cfg ? 'idle' : 'off';
+  let message = '';
+  let inflight = null;
+  let again = false;
+  let pushTimer = null;
+  const listeners = new Set();
+
+  const fileName = () => `pokevault-${(cfg?.profile || 'main').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.json`;
+  const saveCfg = () => (cfg ? save(LS_SYNC, cfg) : localStorage.removeItem(LS_SYNC));
+  const setState = (s, msg = '') => {
+    state = s;
+    message = msg;
+    listeners.forEach((fn) => fn());
+  };
+
+  async function gh(path, opts = {}) {
+    const res = await fetch(API + path, {
+      ...opts,
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${cfg.token}`,
+        ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+    });
+    if (!res.ok) {
+      const err = new Error(`GitHub ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  const payload = () => JSON.stringify({ app: 'pokevault', version: 2, updated: new Date().toISOString(), collection, deleted: tombs });
+
+  async function findOrCreateGist() {
+    if (cfg.gistId) return cfg.gistId;
+    for (let page = 1; page <= 5; page++) {
+      const list = await gh(`/gists?per_page=100&page=${page}`);
+      const hit = list.find((g) => g.description === DESC);
+      if (hit) return (cfg.gistId = hit.id);
+      if (list.length < 100) break;
+    }
+    const g = await gh('/gists', {
+      method: 'POST',
+      body: JSON.stringify({ description: DESC, public: false, files: { [fileName()]: { content: payload() } } }),
+    });
+    return (cfg.gistId = g.id);
+  }
+
+  async function readRemote() {
+    const g = await gh(`/gists/${cfg.gistId}`);
+    const f = g.files?.[fileName()];
+    if (!f) return null;
+    const text = f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  /** merge remote into local; returns { localChanged, remoteStale } */
+  function merge(remote) {
+    const R = remote?.collection || {};
+    const RD = remote?.deleted || {};
+    const stamp = (e) => e?.m || e?.t || 0;
+    let localChanged = false;
+    for (const [k, r] of Object.entries(R)) {
+      const local = collection[k];
+      const lm = local ? stamp(local) : tombs[k] || -1;
+      if (stamp(r) > lm) {
+        if (!local || local.q !== r.q) localChanged = true;
+        collection[k] = { q: r.q, t: r.t || stamp(r), m: stamp(r) };
+        delete tombs[k];
+      }
+    }
+    for (const [k, dm] of Object.entries(RD)) {
+      const local = collection[k];
+      if (local && dm > stamp(local)) {
+        delete collection[k];
+        tombs[k] = dm;
+        localChanged = true;
+      } else if (!local && (tombs[k] || 0) < dm) tombs[k] = dm;
+    }
+    const cutoff = Date.now() - TOMB_KEEP;
+    for (const [k, m] of Object.entries(tombs)) if (m < cutoff) delete tombs[k];
+    // does the remote copy miss anything we have?
+    let remoteStale = !remote;
+    if (!remoteStale) {
+      for (const [k, e] of Object.entries(collection)) if (!R[k] || stamp(R[k]) !== stamp(e) || R[k].q !== e.q) { remoteStale = true; break; }
+      if (!remoteStale) for (const k of Object.keys(R)) if (!collection[k]) { remoteStale = true; break; }
+      if (!remoteStale) for (const [k, m] of Object.entries(tombs)) if (RD[k] !== m) { remoteStale = true; break; }
+    }
+    return { localChanged, remoteStale };
+  }
+
+  async function runOnce() {
+    setState('syncing');
+    try {
+      await findOrCreateGist();
+      let remote;
+      try {
+        remote = await readRemote();
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        cfg.gistId = null; // gist was deleted – make a new one
+        await findOrCreateGist();
+        remote = await readRemote();
+      }
+      const { localChanged, remoteStale } = merge(remote);
+      if (localChanged || remoteStale) saveCollection({ fromSync: true });
+      if (remoteStale) {
+        await gh(`/gists/${cfg.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [fileName()]: { content: payload() } } }) });
+      }
+      cfg.last = Date.now();
+      saveCfg();
+      setState('idle');
+      if (localChanged) onRemoteChange();
+    } catch (e) {
+      console.warn('Sync failed', e);
+      if (e.status === 401) setState('error', 'GitHub rejected the token. Check it in Settings.');
+      else if (e.status === 403 || e.status === 429) setState('error', 'GitHub is limiting requests. Will retry shortly.');
+      else if (e.status === 404) setState('error', 'This token cannot access gists. Make sure the "gist" permission is ticked.');
+      else setState('error', navigator.onLine === false ? 'You are offline. Changes will sync when you reconnect.' : 'Could not reach GitHub. Will retry shortly.');
+    }
+  }
+
+  function sync() {
+    if (!cfg) return Promise.resolve();
+    if (inflight) {
+      again = true;
+      return inflight;
+    }
+    inflight = runOnce().finally(() => {
+      inflight = null;
+      if (again) {
+        again = false;
+        sync();
+      }
+    });
+    return inflight;
+  }
+
+  let pendingRedraw = false;
+  function onRemoteChange() {
+    if (modal.open || selectMode) pendingRedraw = true;
+    else route(true);
+  }
+
+  // auto-sync: on focus, when coming back online and every minute while visible
+  window.addEventListener('focus', () => sync());
+  window.addEventListener('online', () => sync());
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && sync());
+  setInterval(() => document.visibilityState === 'visible' && sync(), 60 * 1000);
+
+  return {
+    get enabled() { return !!cfg; },
+    get state() { return state; },
+    get message() { return message; },
+    get cfg() { return cfg; },
+    fileName,
+    subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
+    sync,
+    flushRedraw() {
+      if (pendingRedraw) {
+        pendingRedraw = false;
+        route(true);
+      }
+    },
+    /** local edit: push a couple of seconds later (batches quick clicks) */
+    changed() {
+      if (!cfg) return;
+      setState('pending');
+      clearTimeout(pushTimer);
+      pushTimer = setTimeout(sync, 2000);
+    },
+    async connect(token, profile) {
+      const prev = cfg;
+      cfg = { token: token.trim(), profile: (profile || 'main').trim() || 'main', gistId: null, last: 0 };
+      try {
+        const me = await gh('/user');
+        cfg.login = me.login;
+      } catch (e) {
+        cfg = prev;
+        throw new Error(e.status === 401 ? 'GitHub did not accept that token.' : 'Could not reach GitHub. Check your connection and try again.');
+      }
+      saveCfg();
+      await sync();
+      if (state === 'error') throw new Error(message);
+    },
+    disconnect() {
+      cfg = null;
+      saveCfg();
+      setState('off');
+    },
+  };
+})();
 
 // --------------------------------------------------------------------------
 // Data
@@ -500,6 +730,7 @@ function setSelectMode(on) {
   if (!on) selected.clear();
   lastSelKey = null;
   document.body.classList.toggle('selecting', on);
+  if (!on) setTimeout(() => Sync.flushRedraw());
   const b = $('#selbtn');
   if (b) {
     b.classList.toggle('on', on);
@@ -626,6 +857,7 @@ function openCard(card, set) {
 let changedWhileModal = false;
 modal.addEventListener('close', () => {
   if (changedWhileModal) route(true);
+  else Sync.flushRedraw();
 });
 
 // --------------------------------------------------------------------------
@@ -1085,8 +1317,9 @@ async function pageSettings() {
   const n = Object.keys(collection).length;
   app.innerHTML = `<h1>Settings</h1>
     <div class="settings" style="margin-top:20px">
+      <section class="panel" id="syncpanel"></section>
       <section class="panel"><h3>Back up your collection</h3>
-        <p>Your collection (${num(n)} printings) is saved in this browser only. Export it to a file to keep it safe or move it to another device.</p>
+        <p>Your collection (${num(n)} printings) is saved in this browser${Sync.enabled ? ' and synced to GitHub' : ''}. You can also export it to a file as a backup.</p>
         <div class="row"><button class="btn primary" id="export">⬇ Export collection</button>
         <label class="btn">⬆ Import file<input type="file" id="import" accept="application/json,.json" hidden></label></div>
       </section>
@@ -1120,12 +1353,13 @@ async function pageSettings() {
       const incoming = data.collection || data;
       if (typeof incoming !== 'object') throw new Error();
       const replace = confirm('Replace your current collection with this file?\n\nOK = replace, Cancel = merge into current collection');
-      if (replace) collection = {};
+      if (replace) clearCollection();
       let added = 0;
       for (const [k, v] of Object.entries(incoming)) {
         const q = typeof v === 'number' ? v : Number(v?.q);
         if (!k.includes('|') || !(q > 0)) continue;
-        collection[k] = { q: Math.max(q, collection[k]?.q || 0), t: v?.t || Date.now() };
+        collection[k] = { q: Math.max(q, collection[k]?.q || 0), t: v?.t || Date.now(), m: Date.now() };
+        delete tombs[k];
         added++;
       }
       saveCollection();
@@ -1142,13 +1376,85 @@ async function pageSettings() {
     savePrefs();
   };
   $('#reset').onclick = () => {
-    if (!confirm('Delete your whole collection from this browser? This cannot be undone (export first!).')) return;
-    collection = {};
+    if (!confirm(`Delete your whole collection${Sync.enabled ? ' on all your synced devices' : ' from this browser'}? This cannot be undone (export first!).`)) return;
+    clearCollection();
     saveCollection();
     toast('Collection deleted');
     pageSettings();
   };
+  renderSyncPanel();
 }
+
+function renderSyncPanel() {
+  const el = $('#syncpanel');
+  if (!el) return;
+  const c = Sync.cfg;
+  if (!c) {
+    el.innerHTML = `<h3>Sync across devices</h3>
+      <p>Save your collection to your GitHub account so it's the same on your phone, tablet and computer.
+      Each person uses their own GitHub account, so you each keep a separate collection.</p>
+      <ol class="steps">
+        <li><a href="https://github.com/settings/tokens/new?scopes=gist&description=Pok%C3%A9Vault%20sync" target="_blank" rel="noopener">Create a GitHub token ↗</a>
+          – the link pre-ticks only the <b>gist</b> permission. Choose an expiry (or "No expiration"), then click <b>Generate token</b> and copy it.</li>
+        <li>Paste it below and press <b>Connect</b>. Do the same on each of your devices with the same token and collection name.</li>
+      </ol>
+      <form id="syncform" class="syncform">
+        <label>GitHub token<input id="synctoken" type="password" autocomplete="off" placeholder="ghp_…" required></label>
+        <label>Collection name<input id="syncprofile" type="text" value="main" autocomplete="off" maxlength="40"></label>
+        <button class="btn primary" type="submit" id="syncconnect">Connect</button>
+      </form>
+      <p class="small">Sharing one GitHub account? Use a different collection name for each person (for example "dom" and "sam").
+      The token is stored only in this browser and can only read and write your gists.</p>
+      <p class="error" id="syncerr" hidden></p>`;
+    $('#syncform').onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = $('#syncconnect');
+      btn.disabled = true;
+      btn.textContent = 'Connecting…';
+      $('#syncerr').hidden = true;
+      try {
+        await Sync.connect($('#synctoken').value, $('#syncprofile').value);
+        toast('Sync is on');
+        pageSettings();
+      } catch (err) {
+        if (!$('#syncerr')) return pageSettings(); // connected, but the first sync failed – the panel shows why
+        $('#syncerr').textContent = err.message;
+        $('#syncerr').hidden = false;
+        btn.disabled = false;
+        btn.textContent = 'Connect';
+      }
+    };
+    return;
+  }
+  const status =
+    Sync.state === 'error' ? `<span class="error">${esc(Sync.message)}</span>`
+    : Sync.state === 'syncing' || Sync.state === 'pending' ? 'Syncing…'
+    : c.last ? `Last synced ${agoText(c.last)}` : 'Not synced yet';
+  el.innerHTML = `<h3>Sync across devices</h3>
+    <p>Signed in as <b>@${esc(c.login || '?')}</b> · collection <b>${esc(c.profile)}</b> · ${status}</p>
+    <p class="small">Changes sync automatically a couple of seconds after you make them, and other devices pick them up when you open or switch back to the site.
+    ${c.gistId ? `Stored in <a href="https://gist.github.com/${esc(c.login || '')}/${esc(c.gistId)}" target="_blank" rel="noopener">this private gist ↗</a> as <code>${esc(Sync.fileName())}</code>.` : ''}</p>
+    <div class="row"><button class="btn primary" id="syncnow">⟳ Sync now</button><button class="btn danger" id="syncoff">Turn off sync on this device</button></div>`;
+  $('#syncnow').onclick = () => Sync.sync();
+  $('#syncoff').onclick = () => {
+    if (!confirm('Turn off sync on this device? Your cards stay on this device and in GitHub.')) return;
+    Sync.disconnect();
+    pageSettings();
+  };
+}
+
+// sync status chip in the top bar
+const syncChip = $('#syncchip');
+function renderSyncChip() {
+  syncChip.hidden = !Sync.enabled;
+  if (!Sync.enabled) return;
+  const st = Sync.state;
+  syncChip.className = 'syncchip ' + st;
+  syncChip.querySelector('span').textContent = st === 'error' ? 'Sync problem' : st === 'syncing' || st === 'pending' ? 'Syncing…' : 'Synced';
+  syncChip.title = st === 'error' ? Sync.message : Sync.cfg.last ? `Last synced ${agoText(Sync.cfg.last)} – click for sync settings` : 'Sync settings';
+  if (location.hash === '#/settings' && st !== 'pending') renderSyncPanel();
+}
+Sync.subscribe(renderSyncChip);
 
 // --------------------------------------------------------------------------
 // Router
@@ -1204,13 +1510,16 @@ window.addEventListener('hashchange', () => route());
 window.addEventListener('storage', (e) => {
   if (e.key === LS_COLLECTION) {
     collection = load(LS_COLLECTION, {});
+    tombs = load(LS_TOMBS, {});
     route(true);
   }
 });
 
 applyTile();
 markCurrency();
+renderSyncChip();
 route();
+Sync.sync();
 // fetch today's exchange rates; re-render once if they changed and a converted currency is shown
 loadRates().then((changed) => {
   if (changed && prefs.currency !== 'EUR') route(true);

@@ -20,6 +20,9 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
   16-pocket (4×4), with two-page spreads on wide screens.
 - **Prices in £ (default), $ or €** – pounds use Cardmarket prices at today's exchange rate, dollars use TCGplayer.
   Set pages and the portfolio load live prices when opened (cached for 12 hours).
+- **Sync across devices** – in Settings, connect a GitHub token (gist permission only) and your collection
+  is saved to a private gist and kept in step on every device. Each person uses their own account (or their
+  own collection name on a shared account), so collections stay separate.
 - Master-set / base-set views, owned/missing filters and search. Your collection and settings
   (currency, layout, filters) are remembered in your browser.
 - Export/import your collection as JSON (it is stored in your browser's localStorage).
