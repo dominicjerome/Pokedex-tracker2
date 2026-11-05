@@ -18,6 +18,8 @@ const API = 'https://api.tcgdex.net/v2/en';
 const CONCURRENCY = Number(process.env.CONCURRENCY || 12);
 // Pokémon TCG Pocket is a digital game – not physical cards, so skip it.
 const SKIP_SERIES = new Set(['tcgp']);
+// Must match EUR_TO_USD in js/app.js.
+const EUR_TO_USD = 1.1;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -179,7 +181,15 @@ async function buildSet(brief, seriesOrder) {
     o.v = variantsFor(c);
     return o;
   });
-  const sum = (key) => Math.round(cards.reduce((a, c) => a + c.v.reduce((b, v) => b + (v[key] || 0), 0), 0) * 100) / 100;
+  // When a printing has no price in one market, fall back to the other one
+  // (converted), so set totals don't silently count it as zero.
+  const sum = (key) =>
+    Math.round(
+      cards.reduce(
+        (a, c) => a + c.v.reduce((b, v) => b + (v[key] ?? (key === 'u' ? (v.e ?? 0) * EUR_TO_USD : (v.u ?? 0) / EUR_TO_USD)), 0),
+        0,
+      ) * 100,
+    ) / 100;
   const data = {
     id: set.id,
     name: set.name,
