@@ -669,12 +669,13 @@ function layoutHtml(tiles, layout) {
     while (pocketTiles.length < per) pocketTiles.push('<div class="pocket-empty" aria-hidden="true"></div>');
     pages.push(pocketTiles);
   }
-  let html = '';
-  for (let p = 0; p < pages.length; p += 2) {
-    html += '<div class="spread">';
-    for (const [j, pg] of pages.slice(p, p + 2).entries())
-      html += `<section class="bpage" style="--cols:${cols}" aria-label="Binder page ${p + j + 1}"><div class="bgrid">${pg.join('')}</div><div class="pno">Page ${p + j + 1}</div></section>`;
-    html += '</div>';
+  // Like a real binder: page 1 sits alone on the right (inside cover on the left),
+  // then spreads of 2–3, 4–5, …
+  const page = (i) =>
+    `<section class="bpage" style="--cols:${cols}" aria-label="Binder page ${i + 1}"><div class="bgrid">${pages[i].join('')}</div><div class="pno">Page ${i + 1}</div></section>`;
+  let html = `<div class="spread"><div class="bcover" aria-hidden="true"><span>Inside cover</span></div>${page(0)}</div>`;
+  for (let p = 1; p < pages.length; p += 2) {
+    html += '<div class="spread">' + page(p) + (p + 1 < pages.length ? page(p + 1) : '') + '</div>';
   }
   return `<div class="binder b${cols}x${rows}">${html}<p class="muted binder-note">${pages.length} pages · ${per}-pocket binder</p></div>`;
 }

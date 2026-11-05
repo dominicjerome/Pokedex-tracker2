@@ -350,3 +350,10 @@ body.selecting .toast { bottom: 110px; }
 .error { color: var(--red); }
 .error[hidden] { display: none; }
 code { font-size: 0.85em; background: var(--surface-3); padding: 1px 6px; border-radius: 6px; }
+
+/* binder inside cover (left of page 1) */
+.bcover { display: grid; place-items: center; border-radius: 14px 4px 4px 14px; border: 1px solid var(--line); border-right: 3px solid #0a0512; background: repeating-linear-gradient(135deg, #150a25 0 10px, #120821 10px 20px); color: var(--dim); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.spread .bcover + .bpage { border-radius: 4px 14px 14px 4px; border-right: 1px solid var(--line); }
+/* a lone left-hand page at the end of the binder */
+.spread .bpage:only-child { grid-column: 1; }
+@media (max-width: 900px) { .bcover { display: none; } .spread .bcover + .bpage { border-radius: 14px; } }
