@@ -266,3 +266,13 @@ select { padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); 
   .currency { margin-left: auto; }
   .toolbar { position: static; }
 }
+
+/* ---------- live price status ---------- */
+.live { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.85rem; color: var(--muted); min-height: 1.2em; position: relative; z-index: 1; }
+.set-header .live { justify-content: inherit; }
+@media (max-width: 760px) { .set-header .live { justify-content: center; } }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); flex: none; }
+.live-dot.busy { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); animation: pulse 1s ease-in-out infinite; }
+.live-dot.off { background: var(--dim); box-shadow: none; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .live-dot.busy { animation: none; } }

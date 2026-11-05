@@ -72,13 +72,154 @@ function getSet(id) {
         return r.json();
       })
       .then((s) => {
-        s.cards.forEach((c, i) => (c.idx = i));
+        s.cards.forEach((c, i) => {
+          c.idx = i;
+          applyLive(c);
+        });
         return s;
       });
     p.catch(() => setCache.delete(id));
     setCache.set(id, p);
   }
   return setCache.get(id);
+}
+
+// --------------------------------------------------------------------------
+// Live prices – fetched from TCGdex in the browser, cached for LIVE_TTL.
+// The pricing rules mirror scripts/build-data.mjs so keys and prices match.
+// --------------------------------------------------------------------------
+const LIVE_API = 'https://api.tcgdex.net/v2/en/cards/';
+const LS_LIVE = 'pokevault.live.v1';
+const LIVE_TTL = 12 * 60 * 60 * 1000;
+/** live: { cardId: { t: fetchedAt, p: { variantKey: [usd|null, eur|null] } } } */
+let live = load(LS_LIVE, {});
+const liveFresh = (id) => live[id] && Date.now() - live[id].t < LIVE_TTL;
+
+function saveLive() {
+  const now = Date.now();
+  for (const id of Object.keys(live)) if (now - live[id].t > LIVE_TTL) delete live[id];
+  save(LS_LIVE, live);
+}
+
+function applyLive(card) {
+  if (!liveFresh(card.id)) return false;
+  const p = live[card.id].p;
+  for (const v of card.v) {
+    const lp = p[v.k];
+    if (!lp) continue;
+    if (lp[0] != null) v.u = lp[0];
+    if (lp[1] != null) v.e = lp[1];
+  }
+  return true;
+}
+
+const r2 = (n) => (typeof n === 'number' && n > 0 ? Math.round(n * 100) / 100 : null);
+function tpPrice(tp, v) {
+  if (!tp) return null;
+  const keys = Object.keys(tp).filter((k) => tp[k] && typeof tp[k] === 'object');
+  if (!keys.length) return null;
+  const pick = (p) => r2(p.marketPrice ?? p.midPrice ?? p.lowPrice);
+  const prefs = [];
+  if ((v.stamp || []).includes('1st-edition')) prefs.push(v.type === 'normal' ? '1st-edition-normal' : '1st-edition-holofoil', '1st-edition');
+  if (v.type === 'reverse') prefs.push('reverse-holofoil');
+  else if (v.type === 'normal') prefs.push('normal', 'unlimited');
+  else prefs.push('holofoil', 'unlimited-holofoil', 'normal', 'unlimited');
+  for (const k of prefs) if (tp[k]) return pick(tp[k]);
+  return keys.length === 1 ? pick(tp[keys[0]]) : null;
+}
+function cmPrice(cm, v) {
+  if (!cm) return null;
+  return v.type === 'reverse' ? r2(cm['trend-holo'] || cm['avg30-holo'] || cm['avg-holo']) : r2(cm.trend || cm.avg30 || cm.avg);
+}
+function rawVariantKey(v) {
+  let k = v.type;
+  if (v.subtype) k += '~' + v.subtype;
+  if (v.foil) k += ':' + v.foil;
+  if (v.stamp && v.stamp.length) k += '#' + v.stamp.join('+');
+  if (v.size && v.size !== 'standard') k += '@' + v.size;
+  return k;
+}
+/** { variantKey: [usd, eur] } from a TCGdex card response */
+function pricesFromApi(c) {
+  let list = Array.isArray(c.variants_detailed) && c.variants_detailed.length ? c.variants_detailed : null;
+  if (!list) {
+    const f = c.variants || {};
+    list = [];
+    if (f.firstEdition) list.push({ type: f.holo ? 'holo' : 'normal', stamp: ['1st-edition'] });
+    if (f.normal) list.push({ type: 'normal' });
+    if (f.holo) list.push({ type: 'holo' });
+    if (f.reverse) list.push({ type: 'reverse' });
+    if (!list.length) list.push({ type: 'normal' });
+  }
+  const out = {};
+  for (const v of list) {
+    const plain = !(v.stamp && v.stamp.length) && !v.foil && (v.size || 'standard') === 'standard' && (!v.subtype || v.subtype === 'unlimited');
+    const own = v.pricing || null;
+    const fb = plain ? c.pricing || null : null;
+    out[rawVariantKey(v)] = [
+      tpPrice(own?.tcgplayer, v) ?? tpPrice(fb?.tcgplayer, v),
+      cmPrice(own?.cardmarket, v) ?? cmPrice(fb?.cardmarket, v),
+    ];
+  }
+  return out;
+}
+
+let liveDown = 0; // time of the last failure, to back off when TCGdex is unreachable
+/**
+ * Fetch live prices for the given cards (skips ones fetched recently).
+ * Returns how many cards were updated; onProgress(done, total) reports progress.
+ */
+async function refreshLive(cards, onProgress) {
+  if (Date.now() - liveDown < 5 * 60 * 1000) return { updated: 0, failed: true };
+  const todo = cards.filter((c) => !liveFresh(c.id));
+  let done = 0, updated = 0, failures = 0, i = 0;
+  onProgress?.(0, todo.length);
+  await Promise.all(
+    Array.from({ length: Math.min(6, todo.length) }, async () => {
+      while (i < todo.length && failures < 8) {
+        const card = todo[i++];
+        try {
+          const res = await fetch(LIVE_API + encodeURIComponent(card.id));
+          if (!res.ok) throw new Error(res.status);
+          live[card.id] = { t: Date.now(), p: pricesFromApi(await res.json()) };
+          if (applyLive(card)) updated++;
+        } catch {
+          failures++;
+        }
+        onProgress?.(++done, todo.length);
+        if (done % 40 === 0) saveLive();
+      }
+    }),
+  );
+  saveLive();
+  if (failures >= 8) liveDown = Date.now();
+  return { updated, failed: failures >= 8, skipped: cards.length - todo.length };
+}
+
+/** Load live prices for `cards`, show progress in #live, call redraw() if anything changed. */
+function startLive(cards, redraw) {
+  const seq = routeSeq;
+  const el = () => (seq === routeSeq ? $('#live') : null);
+  const show = (html) => el() && (el().innerHTML = html);
+  if (!cards.length) return;
+  refreshLive(cards, (d, t) => {
+    if (t) show(`<span class="live-dot busy"></span>Updating live prices… ${d}/${t}`);
+  }).then((r) => {
+    if (seq !== routeSeq) return;
+    if (r.updated) redraw();
+    const allLive = cards.every((c) => liveFresh(c.id));
+    show(
+      allLive
+        ? `<span class="live-dot"></span>Live prices · updated ${agoText(Math.min(...cards.map((c) => live[c.id].t)))}`
+        : `<span class="live-dot off"></span>Saved prices from ${new Date(INDEX.updated).toLocaleDateString()}${r.failed ? ' (live prices unavailable right now)' : ''}`,
+    );
+  });
+}
+function agoText(t) {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  return `${Math.round(m / 60)} h ago`;
 }
 
 async function getSets(ids, onProgress) {
@@ -432,6 +573,7 @@ async function pagePortfolio() {
       <div class="hero-label">Total collection value</div>
       <div class="hero-value">${money(total)}</div>
       <div class="hero-sub">${prefs.currency === 'USD' ? 'TCGplayer market prices' : 'Cardmarket trend prices'} · ${num(priced)} of ${num(slots)} owned printings priced${best ? ` · Top card: <b>${esc(best.card.name)}</b> (${money(best.p)})` : ''}</div>
+      <div class="live" id="live"></div>
       <div class="stats">
         <div class="stat"><b>${num(slots)}</b><span>unique printings</span></div>
         <div class="stat"><b>${num(copies)}</b><span>total cards incl. duplicates</span></div>
@@ -473,6 +615,8 @@ async function pagePortfolio() {
     <h2 class="section">Recently added</h2>
     <div class="card-grid">${recent.map(reg).join('')}</div>`;
   afterToggle = () => {};
+  const ownedCards = [...new Set(entries.map((e) => e.card))];
+  startLive(ownedCards, () => pagePortfolio());
 }
 
 function setCardHtml(s, ownedCount) {
@@ -579,6 +723,7 @@ async function pageSet(id) {
         <div>
           <h1>${esc(set.name)}</h1>
           <div class="meta"><span>${esc(set.seriesName)}</span><span>Released ${fmtDate(set.releaseDate)}</span>${set.code ? `<span>Code ${esc(set.code)}</span>` : ''}<span>${set.official} official + ${Math.max(0, set.total - set.official)} secret</span></div>
+          <div class="live" id="live"></div>
         </div>
         <div id="ring"></div>
       </div>
@@ -705,6 +850,7 @@ async function pageSet(id) {
   };
   document.title = `${set.name} – PokéVault`;
   draw();
+  startLive(set.cards, draw);
 }
 
 async function pageCards() {
@@ -880,7 +1026,9 @@ document.querySelector('.currency').addEventListener('click', (e) => {
 });
 
 let lastHash = null;
+let routeSeq = 0;
 async function route(keepScroll = false) {
+  routeSeq++;
   const hash = location.hash || '#/';
   const [, page, arg] = hash.split('?')[0].split('/');
   const name = page || 'portfolio';
