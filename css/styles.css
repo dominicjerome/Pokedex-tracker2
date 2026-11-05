@@ -302,33 +302,6 @@ body.selecting main { padding-bottom: 120px; }
 .toast { z-index: 70; }
 body.selecting .toast { bottom: 110px; }
 
-/* ---------- binder layout ---------- */
-.binder { display: grid; gap: 28px; }
-.spread { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; justify-content: center; margin: 0 auto; width: 100%; }
-.binder.b2x2 .spread { max-width: 860px; }
-.binder.b3x3 .spread { max-width: 1180px; }
-.binder.b4x3 .spread, .binder.b4x4 .spread { max-width: 1500px; }
-.bpage {
-  min-width: 0; padding: 18px 16px 10px; background: linear-gradient(180deg, #1d1033, #160b28);
-  border: 1px solid var(--line); box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.45);
-}
-.spread .bpage:first-child { border-radius: 14px 4px 4px 14px; border-right: 3px solid #0a0512; }
-.spread .bpage:last-child { border-radius: 4px 14px 14px 4px; }
-.spread .bpage:only-child { border-radius: 14px; border-right: 1px solid var(--line); }
-.bgrid { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 12px; }
-.bpage .tile { gap: 4px; }
-.bpage .tile .cap, .bpage .tile .row2 { font-size: 0.72rem; }
-.bpage .badge { font-size: 0.6rem; padding: 1px 5px; }
-.pocket-empty { aspect-ratio: 245 / 342; border-radius: 4.5% / 3.3%; border: 1px dashed var(--line); background: rgba(255, 255, 255, 0.02); }
-.pno { text-align: center; color: var(--dim); font-size: 0.78rem; margin-top: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
-.binder-note { text-align: center; margin: 0; font-size: 0.85rem; }
-@media (max-width: 900px) {
-  .spread { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .spread .bpage, .spread .bpage:first-child, .spread .bpage:last-child { border-radius: 14px; border-right: 1px solid var(--line); }
-  .bgrid { gap: 8px; }
-  .bpage { padding: 12px 10px 8px; }
-  .bpage .tile .row2 .badges { display: none; }
-}
 .selbar[hidden] { display: none; }
 
 /* ---------- sync ---------- */
@@ -351,9 +324,51 @@ body.selecting .toast { bottom: 110px; }
 .error[hidden] { display: none; }
 code { font-size: 0.85em; background: var(--surface-3); padding: 1px 6px; border-radius: 6px; }
 
-/* binder inside cover (left of page 1) */
-.bcover { display: grid; place-items: center; border-radius: 14px 4px 4px 14px; border: 1px solid var(--line); border-right: 3px solid #0a0512; background: repeating-linear-gradient(135deg, #150a25 0 10px, #120821 10px 20px); color: var(--dim); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
-.spread .bcover + .bpage { border-radius: 4px 14px 14px 4px; border-right: 1px solid var(--line); }
-/* a lone left-hand page at the end of the binder */
-.spread .bpage:only-child { grid-column: 1; }
-@media (max-width: 900px) { .bcover { display: none; } .spread .bcover + .bpage { border-radius: 14px; } }
+/* ---------- binder (flip-through) ---------- */
+.binder { display: grid; gap: 14px; outline: none; scroll-margin-top: 150px; }
+.bnav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.bpos { min-width: 150px; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bslider { flex: 1 1 100%; max-width: 520px; accent-color: var(--accent); }
+.bslider[hidden] { display: none; }
+.bstage { position: relative; display: grid; justify-items: center; perspective: 2400px; }
+/* size each spread so a whole spread fits on screen, like an open binder */
+.spread { display: none; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; margin: 0 auto; transform-style: preserve-3d; --fit: 1.3; max-width: min(1300px, calc((100vh - 240px) * var(--fit))); }
+.b4x3 .spread { --fit: 1.78; max-width: min(1500px, calc((100vh - 240px) * var(--fit))); }
+.spread.active { display: grid; }
+.spread.lone .bpage { grid-column: 1; }
+.binder.single .spread { grid-template-columns: minmax(0, 1fr); max-width: min(620px, calc((100vh - 150px) * var(--fit) / 2)); }
+.bpage, .bcover { min-width: 0; backface-visibility: hidden; }
+.bpage { padding: 16px 14px 8px; background: linear-gradient(180deg, #1d1033, #160b28); border: 1px solid var(--line); box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.45), 0 14px 30px rgba(0, 0, 0, 0.45); }
+.spread > :first-child { border-radius: 14px 4px 4px 14px; border-right: 3px solid #0a0512; }
+.spread > :last-child { border-radius: 4px 14px 14px 4px; }
+.spread > :only-child, .binder.single .spread > * { border-radius: 14px; border-right: 1px solid var(--line); }
+.bcover { display: grid; place-items: center; border: 1px solid var(--line); background: repeating-linear-gradient(135deg, #150a25 0 10px, #120821 10px 20px); color: var(--dim); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.bgrid { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 10px; }
+.bpage .tile { gap: 3px; }
+.bpage .tile .cap, .bpage .tile .row2 { font-size: 0.7rem; }
+.bpage .badge { font-size: 0.58rem; padding: 1px 5px; }
+.bpage .tile .face:hover { transform: none; }
+.pocket-empty { aspect-ratio: 245 / 342; border-radius: 4.5% / 3.3%; border: 1px dashed var(--line); background: rgba(255, 255, 255, 0.02); }
+.pno { text-align: center; color: var(--dim); font-size: 0.72rem; margin-top: 8px; letter-spacing: 0.08em; text-transform: uppercase; }
+.binder-note { text-align: center; margin: 0; font-size: 0.82rem; }
+.bturn { position: absolute; top: 50%; z-index: 5; width: 44px; height: 64px; margin-top: -32px; border-radius: 12px; border: 1px solid var(--line); background: rgba(28, 16, 49, 0.88); color: var(--text); font-size: 1.8rem; cursor: pointer; }
+.bturn:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-3); }
+.bturn:disabled { opacity: 0; pointer-events: none; }
+.bturn.prev { left: 0; }
+.bturn.next { right: 0; }
+@media (min-width: 901px) { .bstage { padding: 0 54px; } }
+@media (max-width: 900px) { .bturn { display: none; } .bgrid { gap: 7px; } .bpage { padding: 10px 8px 6px; } .bpage .tile .row2 .badges { display: none; } }
+
+/* page turn: the outgoing page swings to the spine, the new one swings out from it */
+@keyframes turnOutNext { to { transform: rotateY(-90deg); } }
+@keyframes turnInNext { from { transform: rotateY(90deg); } }
+@keyframes turnOutPrev { to { transform: rotateY(90deg); } }
+@keyframes turnInPrev { from { transform: rotateY(-90deg); } }
+.spread.out-next > :last-child { transform-origin: left center; animation: turnOutNext 0.23s ease-in forwards; }
+.spread.in-next > :first-child { transform-origin: right center; animation: turnInNext 0.26s ease-out; }
+.spread.out-prev > :first-child { transform-origin: right center; animation: turnOutPrev 0.23s ease-in forwards; }
+.spread.in-prev > :last-child { transform-origin: left center; animation: turnInPrev 0.26s ease-out; }
+.binder.single .spread.out-next > * { transform-origin: left center; animation: turnOutNext 0.23s ease-in forwards; }
+.binder.single .spread.in-next > * { transform-origin: left center; animation: turnInPrev 0.26s ease-out; }
+.binder.single .spread.out-prev > * { transform-origin: right center; animation: turnOutPrev 0.23s ease-in forwards; }
+.binder.single .spread.in-prev > * { transform-origin: right center; animation: turnInNext 0.26s ease-out; }

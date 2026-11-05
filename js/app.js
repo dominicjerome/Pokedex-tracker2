@@ -657,11 +657,18 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
 }
 
 const BINDERS = { '2x2': [2, 2], '3x3': [3, 3], '4x3': [4, 3], '4x4': [4, 4] };
-/** Wrap tile HTML in a plain grid, or in binder pages (two pages per spread). */
-function layoutHtml(tiles, layout) {
-  const b = BINDERS[layout];
-  if (!b) return `<div class="card-grid">${tiles.join('')}</div>`;
-  const [cols, rows] = b;
+const gridHtml = (tiles) => `<div class="card-grid">${tiles.join('')}</div>`;
+const narrowMQ = matchMedia('(max-width: 900px)');
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let binderCtl = null; // the binder currently on screen (for keyboard control)
+
+/**
+ * Render tiles as a binder you flip through. Wide screens show two-page spreads
+ * like a real binder (inside cover + page 1, then 2–3, 4–5, …); narrow screens
+ * show one page at a time. `key` remembers the open page per set.
+ */
+function mountBinder(container, tiles, layout, key) {
+  const [cols, rows] = BINDERS[layout];
   const per = cols * rows;
   const pages = [];
   for (let i = 0; i < tiles.length; i += per) {
@@ -669,16 +676,108 @@ function layoutHtml(tiles, layout) {
     while (pocketTiles.length < per) pocketTiles.push('<div class="pocket-empty" aria-hidden="true"></div>');
     pages.push(pocketTiles);
   }
-  // Like a real binder: page 1 sits alone on the right (inside cover on the left),
-  // then spreads of 2–3, 4–5, …
-  const page = (i) =>
+  const single = narrowMQ.matches;
+  const pageHtml = (i) =>
     `<section class="bpage" style="--cols:${cols}" aria-label="Binder page ${i + 1}"><div class="bgrid">${pages[i].join('')}</div><div class="pno">Page ${i + 1}</div></section>`;
-  let html = `<div class="spread"><div class="bcover" aria-hidden="true"><span>Inside cover</span></div>${page(0)}</div>`;
-  for (let p = 1; p < pages.length; p += 2) {
-    html += '<div class="spread">' + page(p) + (p + 1 < pages.length ? page(p + 1) : '') + '</div>';
+  // spreads: list of page indexes shown together (-1 = inside cover)
+  const spreads = [];
+  if (single) pages.forEach((_, i) => spreads.push([i]));
+  else {
+    spreads.push([-1, 0]);
+    for (let p = 1; p < pages.length; p += 2) spreads.push(p + 1 < pages.length ? [p, p + 1] : [p]);
   }
-  return `<div class="binder b${cols}x${rows}">${html}<p class="muted binder-note">${pages.length} pages · ${per}-pocket binder</p></div>`;
+  const label = (sp) => {
+    const nums = sp.filter((i) => i >= 0).map((i) => i + 1);
+    return nums.length > 1 ? `Pages ${nums[0]}–${nums[1]} of ${pages.length}` : `Page ${nums[0]} of ${pages.length}`;
+  };
+  // open at the remembered page
+  prefs.bpage = prefs.bpage || {};
+  const wantPage = Math.min((prefs.bpage[key] || 1) - 1, pages.length - 1);
+  let cur = Math.max(0, spreads.findIndex((sp) => sp.includes(wantPage)));
+
+  container.innerHTML = `<div class="binder b${cols}x${rows}${single ? ' single' : ''}" tabindex="-1">
+    <div class="bnav">
+      <button class="btn sm" data-b="first" aria-label="First page">«</button>
+      <button class="btn sm" data-b="prev" aria-label="Previous page">‹ Prev</button>
+      <span class="bpos" aria-live="polite"></span>
+      <button class="btn sm" data-b="next" aria-label="Next page">Next ›</button>
+      <button class="btn sm" data-b="last" aria-label="Last page">»</button>
+      <input class="bslider" type="range" min="0" max="${spreads.length - 1}" value="${cur}" aria-label="Jump to page" ${spreads.length < 2 ? 'hidden' : ''}>
+    </div>
+    <div class="bstage">
+      <button class="bturn prev" data-b="prev" aria-label="Previous page">‹</button>
+      ${spreads
+        .map((sp, i) => `<div class="spread${i === cur ? ' active' : ''}${sp.length === 1 && sp[0] >= 0 && !single ? ' lone' : ''}" data-i="${i}">${sp.map((p) => (p < 0 ? '<div class="bcover" aria-hidden="true"><span>Inside cover</span></div>' : pageHtml(p))).join('')}</div>`)
+        .join('')}
+      <button class="bturn next" data-b="next" aria-label="Next page">›</button>
+    </div>
+    <p class="muted binder-note">${pages.length} pages · ${per}-pocket binder · use ← → keys or swipe to turn pages</p>
+  </div>`;
+
+  const root = container.firstElementChild;
+  const els = [...root.querySelectorAll('.spread')];
+  const slider = root.querySelector('.bslider');
+  let busy = false;
+  const update = () => {
+    root.querySelector('.bpos').textContent = label(spreads[cur]);
+    slider.value = cur;
+    root.querySelectorAll('[data-b="prev"],[data-b="first"]').forEach((b) => (b.disabled = cur === 0));
+    root.querySelectorAll('[data-b="next"],[data-b="last"]').forEach((b) => (b.disabled = cur === spreads.length - 1));
+    prefs.bpage[key] = Math.max(0, spreads[cur].find((p) => p >= 0)) + 1;
+    savePrefs();
+  };
+  const go = (target, animate = true) => {
+    target = Math.max(0, Math.min(spreads.length - 1, target));
+    if (target === cur || busy) return;
+    const out = els[cur], inn = els[target];
+    const dir = target > cur ? 'next' : 'prev';
+    cur = target;
+    update();
+    if (!animate || reduceMotion.matches) {
+      out.classList.remove('active');
+      inn.classList.add('active');
+      return;
+    }
+    busy = true;
+    out.classList.add('out-' + dir);
+    setTimeout(() => {
+      out.classList.remove('active', 'out-' + dir);
+      inn.classList.add('active', 'in-' + dir);
+      setTimeout(() => {
+        inn.classList.remove('in-' + dir);
+        busy = false;
+      }, 260);
+    }, 230);
+  };
+  root.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-b]');
+    if (!b || b.disabled) return;
+    const a = b.dataset.b;
+    go(a === 'next' ? cur + 1 : a === 'prev' ? cur - 1 : a === 'first' ? 0 : spreads.length - 1, a === 'next' || a === 'prev');
+  });
+  slider.addEventListener('input', () => go(Number(slider.value), false));
+  // swipe on touch screens
+  let sx = null, sy = 0;
+  const stage = root.querySelector('.bstage');
+  stage.addEventListener('touchstart', (e) => ((sx = e.touches[0].clientX), (sy = e.touches[0].clientY)), { passive: true });
+  stage.addEventListener('touchend', (e) => {
+    if (sx == null) return;
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    sx = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(cur + (dx < 0 ? 1 : -1));
+  });
+  binderCtl = { root, go: (d) => go(cur + d) };
+  update();
 }
+// ← → turn pages (unless typing in a box or a dialog is open)
+document.addEventListener('keydown', (e) => {
+  if (!binderCtl || !document.contains(binderCtl.root) || modal.open) return;
+  if (e.target.closest('input, select, textarea') || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.key === 'ArrowRight') (binderCtl.go(1), e.preventDefault());
+  if (e.key === 'ArrowLeft') (binderCtl.go(-1), e.preventDefault());
+});
+// switching between one page and two-page spreads when the window is resized
+narrowMQ.addEventListener('change', () => binderCtl && document.contains(binderCtl.root) && redrawPage?.());
 
 // Delegated grid clicks (toggle ownership / select / open details)
 let gridLookup = new Map(); // key -> {card, v, set}
@@ -1171,9 +1270,9 @@ async function pageSet(id) {
       gridLookup.set(k, e);
       return tileHtml(e, e.base ? { anyOwned: isOwned(e) } : {});
     });
-    $('#grid').innerHTML = list.length
-      ? layoutHtml(html, prefs.layout)
-      : '<div class="empty"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
+    if (!list.length) $('#grid').innerHTML = '<div class="empty"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
+    else if (BINDERS[prefs.layout]) mountBinder($('#grid'), html, prefs.layout, set.id);
+    else $('#grid').innerHTML = gridHtml(html);
     $('#count').textContent = `${num(list.length)} shown`;
     stats();
   };
