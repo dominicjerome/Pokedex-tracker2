@@ -1513,15 +1513,19 @@ async function pageSets() {
           : `${num(idx.sets.length)} ${esc(langInfo(lang).name)} sets. Names are shown as printed, with the English Pokémon name underneath. Not every card has a picture yet – they appear as the card database adds them.`
     }</p>
     <div class="toolbar">
-      <div class="grow"><input class="search" id="q" type="search" placeholder="Search sets…" autocomplete="off"></div>
-      <div class="seg" id="sfilter">
-        <button data-v="all">All</button><button data-v="started">Started</button><button data-v="promo">Promos</button>
+      <div class="tb-row">
+        <div class="grow"><input class="search" id="q" type="search" placeholder="Search sets…" autocomplete="off"></div>
+        ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="smset"')}
       </div>
-      ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="smset"')}
-      <select id="ssort" aria-label="Sort sets">
-        <option value="newest">Newest first</option><option value="oldest">Oldest first</option>
-        <option value="progress">Most complete</option><option value="value">Most valuable set</option>
-      </select>
+      <div class="tb-row">
+        <div class="seg" id="sfilter">
+          <button data-v="all">All</button><button data-v="started">Started</button><button data-v="promo">Promos</button>
+        </div>
+        <select id="ssort" aria-label="Sort sets">
+          <option value="newest">Newest first</option><option value="oldest">Oldest first</option>
+          <option value="progress">Most complete</option><option value="value">Most valuable set</option>
+        </select>
+      </div>
     </div>
     <div id="setlist"></div>`;
   let filter = 'all';
@@ -1622,25 +1626,26 @@ async function pageSet(id) {
       <div class="set-stats" id="setstats"></div>
     </section>
     <div class="toolbar">
-      <div class="seg" id="mode" title="Master set shows every printing (reverse holos, stamps…); Base set shows one per card number">
-        <button data-v="master">Master set</button><button data-v="base">Base set</button>
+      <div class="tb-row">
+        <div class="grow"><input class="search" id="q" type="search" placeholder="Search name, number or a Pokémon in the art…" autocomplete="off"></div>
+        <div class="seg" id="view" title="Base set: one per card number. Standard master set: every card's regular printings (normal, holo, reverse, set patterns). True master set: also stamped, Prize Pack and tin / blister versions.">
+          <button data-v="base">Base set</button><button data-v="standard">Standard master</button><button data-v="true">True master</button>
+        </div>
       </div>
-      <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
-      ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="mset"')}
-      <select id="sort" aria-label="Sort cards">
-        <option value="number">Set order</option><option value="value-desc">Value: high → low</option>
-        <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
-      </select>
-      <div class="grow"><input class="search" id="q" type="search" placeholder="Search name, number or a Pokémon in the art…" autocomplete="off"></div>
-      <select id="layout" aria-label="Layout" title="Show the set as binder pages">
-        <option value="grid">Grid</option>
-        <option value="2x2">Binder · 4-pocket (2×2)</option>
-        <option value="3x3">Binder · 9-pocket (3×3)</option>
-        <option value="4x3">Binder · 12-pocket (4×3)</option>
-        <option value="4x4">Binder · 16-pocket (4×4)</option>
-      </select>
-      <span class="count" id="count"></span>
-      <button class="btn sm" id="selbtn" aria-pressed="false" title="Select several cards, then add or remove them together">☐ Select</button>
+      <div class="tb-row">
+        <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
+        <select id="sort" aria-label="Sort cards">
+          <option value="number">Set order</option><option value="value-desc">Value: high → low</option>
+          <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
+        </select>
+        <select id="layout" aria-label="Layout">
+          <option value="grid">Grid</option><option value="2x2">Binder · 4-pocket</option><option value="3x3">Binder · 9-pocket</option>
+        <option value="4x3">Binder · 12-pocket</option><option value="4x4">Binder · 16-pocket</option>
+        </select>
+        <span class="tb-spacer"></span>
+        <span class="count" id="count"></span>
+        <button class="btn sm" id="selbtn" aria-pressed="false" title="Select several cards, then add or remove them together">☐ Select</button>
+      </div>
     </div>
     <div id="grid"></div>`;
 
@@ -1665,12 +1670,14 @@ async function pageSet(id) {
     const mp = pct(o, slots);
     const bp = pct(cards, set.total);
     const officialOwned = set.cards.filter((c, i) => i < set.official && c.v.some((v) => qtyOf(c.id, v.k))).length;
-    $('#ring').innerHTML = ring(prefs.mode === 'master' ? mp : bp);
+    const base = prefs.mode === 'base';
+    $('#ring').innerHTML = ring(base ? bp : mp);
     $('#setstats').innerHTML = `
-      <div class="stat"><b>${num(o)} / ${num(slots)}</b><span>Printings in the ${masterLabel()}</span>${bar(mp, mp >= 100)}</div>
-      <div class="stat"><b>${num(cards)} / ${num(set.total)}</b><span>Unique cards (incl. secret rares)</span>${bar(bp, bp >= 100)}</div>
+      ${base
+        ? `<div class="stat"><b>${num(cards)} / ${num(set.total)}</b><span>Cards (incl. secret rares)</span>${bar(bp, bp >= 100)}</div>`
+        : `<div class="stat"><b>${num(o)} / ${num(slots)}</b><span>Printings · ${masterLabel()}</span>${bar(mp, mp >= 100)}</div>`}
       <div class="stat"><b>${num(officialOwned)} / ${num(set.official)}</b><span>Official set (${set.official} numbered)</span>${bar(pct(officialOwned, set.official), officialOwned >= set.official)}</div>
-      <div class="stat"><b class="value">${money(vOwned)}</b><span>Your value · master set ≈ ${money(vTotal, { compact: true })}</span></div>`;
+      <div class="stat"><b class="value">${money(vOwned)}</b><span>Your value · whole set ≈ ${money(vTotal, { compact: true })}</span></div>`;
   };
 
   const draw = () => {
@@ -1722,9 +1729,21 @@ async function pageSet(id) {
     };
     mark();
   };
-  bindSeg('mode', 'mode');
+  // one "view" switch: base set, or the standard / true master set
+  const viewSeg = $('#view');
+  const markView = () => viewSeg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (prefs.mode === 'base' ? 'base' : prefs.master)));
+  viewSeg.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.v === 'base') prefs.mode = 'base';
+    else ((prefs.mode = 'master'), (prefs.master = b.dataset.v));
+    savePrefs();
+    markView();
+    draw();
+  };
+  markView();
   bindSeg('filter', 'filter');
-  bindSeg('mset', 'master');
+
   const sortSel = $('#sort');
   sortSel.value = prefs.sort;
   sortSel.onchange = () => {
@@ -1773,17 +1792,22 @@ async function pageCards() {
 
   app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every ${exLang === 'en' ? '' : esc(langInfo(exLang).name) + ' '}set (${num(all.length)} in total), sorted across sets.</p>
     <div class="toolbar">
-      <select id="exlang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === exLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
-      <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card or a Pokémon in the art, e.g. Snivy…" autocomplete="off"></div>
+      <div class="tb-row">
+        <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card or a Pokémon in the art, e.g. Snivy…" autocomplete="off"></div>
+        ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="exstamps"')}
+      </div>
+      <div class="tb-row">
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="graded">Graded</button><button data-v="missing">Missing</button></div>
-      ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="exstamps"')}
+      <select id="exlang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === exLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
       <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
       <select id="sort" aria-label="Sort">
         <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option>
         <option value="name">Name A–Z</option><option value="newest">Newest set first</option><option value="oldest">Oldest set first</option>
       </select>
+      <span class="tb-spacer"></span>
       <span class="count" id="count"></span>
       <button class="btn sm" id="selbtn" aria-pressed="false" title="Select several cards, then add or remove them together">☐ Select</button>
+      </div>
     </div>
     <div class="card-grid" id="grid"></div>
     <div class="more"><button class="btn" id="more">Show more</button></div>`;
@@ -2007,9 +2031,10 @@ async function pageBinder(id, sub) {
         <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
       </select>
       <select id="blayout" aria-label="Layout">
-        <option value="grid">Grid</option><option value="2x2">Binder · 4-pocket (2×2)</option><option value="3x3">Binder · 9-pocket (3×3)</option>
-        <option value="4x3">Binder · 12-pocket (4×3)</option><option value="4x4">Binder · 16-pocket (4×4)</option>
+        <option value="grid">Grid</option><option value="2x2">Binder · 4-pocket</option><option value="3x3">Binder · 9-pocket</option>
+        <option value="4x3">Binder · 12-pocket</option><option value="4x4">Binder · 16-pocket</option>
       </select>
+      <span class="tb-spacer"></span>
       <span class="count" id="count"></span>
       <button class="btn sm" id="selbtn" aria-pressed="false" title="Select cards to reorder, remove from the binder or mark owned">☐ Select</button>
     </div>
@@ -2114,15 +2139,20 @@ async function binderPicker(b) {
     <h1>Add cards to ${esc(b.name)}</h1>
     <p class="muted">Search a Pokémon, then tap cards to add or remove them. Cards where it appears in the artwork are included and marked <span class="also-chip">✦ in art</span>.</p>
     <div class="toolbar">
-      <div class="grow"><input class="search" id="q" type="search" placeholder="Search a Pokémon, card or set, e.g. Jigglypuff" autocomplete="off" value="${esc(b.lastSearch || '')}"></div>
-      <div class="seg" id="pmode" title="Show one tile per card, or every printing (reverse holo, stamps…)">
-        <button data-v="card">One per card</button><button data-v="all">Every printing</button>
+      <div class="tb-row">
+        <div class="grow"><input class="search" id="q" type="search" placeholder="Search a Pokémon, card or set, e.g. Jigglypuff" autocomplete="off" value="${esc(b.lastSearch || '')}"></div>
+        <select id="plang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === pickLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
       </div>
-      <div class="seg" id="pcam"><button data-v="yes">Include cameos</button><button data-v="no">Name only</button></div>
-      <select id="plang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === pickLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
-      <span class="count" id="count"></span>
-      <button class="btn sm" id="addall">＋ Add all results</button>
-      <a class="btn sm primary" href="#/binder/${encodeURIComponent(b.id)}">Done</a>
+      <div class="tb-row">
+        <div class="seg" id="pmode" title="Show one tile per card, or every printing (reverse holo, stamps…)">
+          <button data-v="card">One per card</button><button data-v="all">Every printing</button>
+        </div>
+        <div class="seg" id="pcam"><button data-v="yes">Include cameos</button><button data-v="no">Name only</button></div>
+        <span class="tb-spacer"></span>
+        <span class="count" id="count"></span>
+        <button class="btn sm" id="addall">＋ Add all</button>
+        <a class="btn sm primary" href="#/binder/${encodeURIComponent(b.id)}">Done</a>
+      </div>
     </div>
     <div class="card-grid picker" id="grid"></div>
     <div class="more"><button class="btn" id="more">Show more</button></div>`;

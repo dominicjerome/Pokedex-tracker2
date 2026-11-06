@@ -140,7 +140,7 @@ h2.section small { color: var(--muted); font-weight: 400; font-size: 0.9rem; }
 .progress-item .pct { font-weight: 700; font-size: 1.1rem; color: var(--accent-2); text-align: right; min-width: 56px; }
 
 /* ---------- toolbar ---------- */
-.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 18px 0; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); position: sticky; top: 64px; z-index: 20; }
+.toolbar { display: flex; flex-direction: column; gap: 10px; margin: 18px 0; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); position: sticky; top: 64px; z-index: 20; }
 .toolbar .grow { flex: 1 1 200px; }
 .search { width: 100%; padding: 9px 14px 9px 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23a99bc7' stroke-width='2'%3E%3Ccircle cx='7' cy='7' r='5'/%3E%3Cpath d='m11 11 4 4'/%3E%3C/svg%3E") no-repeat 12px center; }
 .search:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -444,3 +444,20 @@ body.selecting .tile .face .slabchip { bottom: 8px; }
 .slabform select:disabled { opacity: 0.4; }
 
 .imglang { position: absolute; left: 8px; bottom: 8px; z-index: 2; padding: 1px 7px; border-radius: 6px; font-size: 0.66rem; font-weight: 800; color: #fff; background: rgba(13, 7, 23, 0.85); border: 1px solid rgba(248, 113, 113, 0.5); }
+
+/* ---------- toolbar rows ---------- */
+.tb-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.tb-row + .tb-row { padding-top: 10px; border-top: 1px solid var(--line); }
+.tb-spacer { flex: 1 1 0; }
+.toolbar select, .toolbar .search, .toolbar .seg, .toolbar .btn.sm { height: 38px; }
+.toolbar select { padding-block: 0; }
+.toolbar .btn.sm { padding-block: 0; }
+.toolbar .seg button { padding: 0 12px; height: 100%; }
+@media (max-width: 640px) {
+  .tb-row > .seg { flex: 1 1 100%; }
+  .tb-row > .seg button { flex: 1; }
+  .tb-spacer { display: none; }
+}
+/* set page stats: three across, value full width on phones */
+.set-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 560px) { .set-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .set-stats .stat:last-child { grid-column: 1 / -1; } }
