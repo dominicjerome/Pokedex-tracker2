@@ -302,8 +302,17 @@ async function finalizeIndex() {
   const stamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
   // tin / blister / box versions (Cosmos, Galaxy, Cracked Ice… holos and metal cards) – part of the
   // "true" master set but not the standard one. Only from 2003 on: older data uses these flags for regular prints.
-  const EXTRA_FOILS = new Set(['cosmos', 'galaxy', 'cracked-ice', 'cracked_ice', 'wave', 'tinsel', 'league']);
-  const extra = (v, date) => v.dup || ((date || '') >= '2003' && !stamped(v) && (EXTRA_FOILS.has(v.f) || v.t === 'metal'));
+  const EXTRA_FOILS = new Set(['cosmos', 'galaxy', 'cracked-ice', 'cracked_ice', 'wave', 'league', 'player-reward', 'professor-program']);
+  // regular sub-printings; anything else (no e-Reader, misprints, peelable Ditto…) is an error/variation – true master set only
+  const REGULAR_SUBS = new Set(['unlimited', 'shadowless', '1999-2000-copyright', '1999-copyright', 'no-rarity']);
+  const extra = (v, date) => {
+    if (v.std) return false; // TCGplayer sells this as the card's regular printing
+    if (v.dup) return true;
+    if (v.sub && !REGULAR_SUBS.has(v.sub)) return true;
+    // the set logo on reverse holos is the regular reverse only in the EX era; later it's a stamp
+    if (v.t === 'reverse' && (v.s || []).join() === 'set-logo' && (date || '') >= '2007') return true;
+    return (date || '') >= '2003' && !stamped(v) && (EXTRA_FOILS.has(v.f) || v.t === 'metal');
+  };
   for (const meta of index.sets) {
     const file = path.join(OUT, 'sets', `${PREFIX ? meta.id.slice(PREFIX.length) : meta.id}.json`);
     if (!existsSync(file)) continue;
@@ -312,6 +321,12 @@ async function finalizeIndex() {
     for (const v of vs) {
       if (extra(v, set.releaseDate)) v.x = 1;
       else delete v.x;
+    }
+    // a card always keeps at least one standard printing
+    for (const c of set.cards) {
+      if (c.v.some((v) => !stamped(v) && !v.x)) continue;
+      const v = c.v.find((x) => !stamped(x) && !x.dup) || c.v.find((x) => !stamped(x));
+      if (v) delete v.x;
     }
     // gold Hyper Rares are sometimes listed twice (plain holo + gold holo) – the plain one is the duplicate
     for (const c of set.cards) {

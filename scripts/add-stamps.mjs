@@ -142,6 +142,16 @@ async function completionOps(groups, sets) {
         continue; // other tagged listings are alternate arts, stamps… handled elsewhere
       }
       const names = new Set(subs.map((x) => x.subTypeName));
+      if (subs.length)
+        list.push({
+          op: 'sold',
+          normal: names.has('Normal') || names.has('Unlimited') || names.has('1st Edition'),
+          holo: [...names].some((n) => /Holofoil/.test(n) && !/Reverse/.test(n)),
+          reverse: names.has('Reverse Holofoil'),
+          modern: (set.releaseDate || '') >= '2010',
+        });
+      // sold both as non-holo and holo (Kalos Starter Set, POP Series…): make sure a holo exists
+      if (names.has('Normal') && names.has('Holofoil')) list.push({ op: 'addholo', u: price('Holofoil') });
       for (const x of subs) {
         const u = price(x.subTypeName);
         if (x.subTypeName === 'Reverse Holofoil') list.push({ op: 'add', k: 'reverse', t: 'reverse', u, anyFoil: !patternsListed });
@@ -181,6 +191,31 @@ function applyOps(c, list) {
       else if (plainHolo) for (const n of plainNormals) n.dup = 1;
       const h = c.v.find((x) => x.t === 'holo' && isPlainV(x) && !(x.s || []).length);
       if (h && h.u == null && o.u != null) h.u = o.u;
+    } else if (o.op === 'addholo') {
+      if (!c.v.some((x) => x.t === 'holo' && !(x.s || []).some((y) => y !== '1st-edition') && !x.z)) {
+        const v = { k: 'holo', t: 'holo', src: 'tcgp' };
+        if (o.u != null) v.u = o.u;
+        insertRegular(c, v);
+        added++;
+      }
+    } else if (o.op === 'sold') {
+      // the card's regular printing of a type TCGplayer sells is sometimes a special foil (POP Series Cosmos holos,
+      // Cracked Ice-only cards, Black Bolt "tinsel" holos): mark it as standard
+      // modern holo-only cards (Trainer Gallery…) sometimes get a reverse holo that was never printed
+      if (o.modern && o.holo && !o.normal && !o.reverse) {
+        const plainHolo = c.v.some((x) => x.t === 'holo' && isPlainV(x) && !(x.s || []).length);
+        if (plainHolo) for (const r of c.v.filter((x) => x.t === 'reverse' && !x.f && !(x.s || []).length && !x.src)) r.dup = 1;
+      }
+      for (const t of ['normal', 'holo', 'reverse']) {
+        if (!o[t]) continue;
+        const regular = c.v.filter((x) => x.t === t && !x.z && !(x.s || []).some((y) => y !== '1st-edition'));
+        if (regular.some((x) => !x.f) || !regular.length) continue;
+        regular[0].std = 1;
+      }
+      // a regular normal/holo printing TCGplayer doesn't sell for this card (while it sells another one): a bogus listing
+      const plainOf = (t) => c.v.filter((x) => x.t === t && isPlainV(x) && !(x.s || []).length && (!x.sub || x.sub === 'unlimited') && !x.f);
+      if (!o.normal && o.holo && plainOf('holo').length) for (const n of plainOf('normal')) n.dup = 1;
+      if (!o.holo && o.normal && plainOf('normal').length) for (const h of plainOf('holo')) h.dup = 1;
     } else if (o.op === 'photo') {
       const v = c.v.find((x) => x.f === o.f && x.t === 'reverse');
       if (v) { if (!v.im) v.im = o.im; if (v.u == null && o.u != null) v.u = o.u; }
