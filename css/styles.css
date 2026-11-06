@@ -436,3 +436,12 @@ body.selecting .tile .face .slabchip { bottom: 8px; }
 .tile .placeholder b { color: var(--text); font-size: 0.95rem; }
 .tile .placeholder span { font-size: 0.8rem; }
 .tile .placeholder small { font-size: 0.7rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 6px; }
+
+/* ---------- graded market prices / copy language ---------- */
+.graded-prices { margin-top: 16px; padding: 12px 14px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
+.graded-prices h3 { font-size: 1rem; margin-bottom: 10px; }
+.gp-list { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.gp-list > div { display: flex; align-items: center; gap: 8px; }
+.slabform-hint { grid-column: 1 / -1; font-size: 0.8rem; }
+.slabform-hint:empty { display: none; }
+.slabform select:disabled { opacity: 0.4; }

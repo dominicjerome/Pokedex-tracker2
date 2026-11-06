@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fillGaps } from './fill-gaps.mjs';
+import { addStamps } from './add-stamps.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LANG = (process.argv.find((a) => a.startsWith('--lang=')) || '--lang=en').slice(7);
@@ -205,6 +206,9 @@ async function buildSet(brief, seriesOrder) {
     if (c.category) o.cat = c.category;
     if (c.illustrator) o.ill = c.illustrator;
     if (c.types) o.ty = c.types;
+    // TCGplayer product id (used to look up graded prices)
+    const tp = c.thirdParty?.tcgplayer || (c.variants_detailed || []).map((v) => v.thirdParty?.tcgplayer).find(Boolean);
+    if (tp) o.tp = tp;
     o.v = variantsFor(c);
     return o;
   });
@@ -287,6 +291,14 @@ async function main() {
     if (LANG === 'en') await fillGaps();
   } catch (e) {
     console.error('Filling gaps from pokemontcg.io failed:', e.message);
+  }
+  // stamped / exclusive printings of set cards from TCGplayer's catalogue
+  if (LANG === 'en') {
+    try {
+      await addStamps();
+    } catch (e) {
+      console.error('Adding stamped printings failed:', e.message);
+    }
   }
 }
 

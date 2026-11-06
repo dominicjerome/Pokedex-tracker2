@@ -596,18 +596,53 @@ function toCur(amount, cur) {
   return prefs.currency === 'EUR' ? eur : eur * FX[prefs.currency];
 }
 /** value of one graded copy; without an entered value it counts at the raw price */
-const slabValue = (slab, v) => (slab.v != null ? toCur(slab.v, slab.cur) : priceNum(v));
+// Graded market prices (eBay sold, via Pokemon Price Tracker) – data/graded.json, built by a daily job
+let GRADED = {};
+let GRADED_UPDATED = null;
+let gradedLoad = null;
+function getGraded() {
+  gradedLoad ||= fetch('data/graded.json', { cache: 'no-cache' })
+    .then((r) => (r.ok ? r.json() : {}))
+    .then((d) => ((GRADED = d.cards || {}), (GRADED_UPDATED = d.updated || null)))
+    .catch(() => {});
+  return gradedLoad;
+}
+const isGraded = (sl) => sl.co !== 'Raw';
+/** market price (USD) for a graded copy's grade, if known */
+const marketGradeUSD = (cardId, sl) => (isGraded(sl) ? GRADED[cardId]?.usd?.[`${sl.co} ${sl.gr}`] : null) ?? null;
+/** where a copy's value comes from: 'entered' | 'market' | 'raw' */
+const slabSource = (sl, cardId) => (sl.v != null ? 'entered' : marketGradeUSD(cardId, sl) != null ? 'market' : 'raw');
+/** value of one extra copy (graded and/or another language): your value, else the market price for its grade, else the raw price */
+function slabValue(sl, v, cardId) {
+  if (sl.v != null) return toCur(sl.v, sl.cur);
+  const m = marketGradeUSD(cardId, sl);
+  return m != null ? toCur(m, 'USD') : priceNum(v);
+}
 /** value of every copy you hold of a printing, split raw / graded */
 function heldValue(cardId, v) {
-  const raw = priceNum(v) * rawOf(cardId, v.k);
-  const graded = gradedOf(cardId, v.k).reduce((a, sl) => a + slabValue(sl, v), 0);
+  let raw = priceNum(v) * rawOf(cardId, v.k);
+  let graded = 0;
+  for (const sl of gradedOf(cardId, v.k)) {
+    if (isGraded(sl)) graded += slabValue(sl, v, cardId);
+    else raw += slabValue(sl, v, cardId);
+  }
   return { raw, graded, total: raw + graded };
 }
 const GRADERS = ['PSA', 'CGC', 'BGS', 'SGC', 'TAG', 'ACE', 'Other'];
 const GRADES = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6.5', '6', '5.5', '5', '4.5', '4', '3.5', '3', '2.5', '2', '1.5', '1', 'Authentic'];
-const slabLabel = (sl) => `${sl.co} ${sl.gr}`;
-/** best grade first */
-const sortSlabs = (g) => [...g].sort((a, b) => (parseFloat(b.gr) || 0) - (parseFloat(a.gr) || 0));
+// languages a copy can be in (for English-set cards; other catalogues have their own sets)
+const COPY_LANGS = [
+  ['EN', 'English'], ['JP', 'Japanese'], ['DE', 'German'], ['FR', 'French'], ['IT', 'Italian'], ['ES', 'Spanish'],
+  ['PT', 'Portuguese'], ['NL', 'Dutch'], ['PL', 'Polish'], ['RU', 'Russian'], ['KO', 'Korean'], ['ZH', 'Chinese'], ['TH', 'Thai'], ['ID', 'Indonesian'],
+];
+const copyLangName = (code) => (COPY_LANGS.find((l) => l[0] === code) || [code, code])[1];
+const slabLabel = (sl) => {
+  const lang = sl.lang && sl.lang !== 'EN' ? sl.lang : '';
+  if (!isGraded(sl)) return lang ? `${copyLangName(lang)}` : 'Raw';
+  return `${sl.co} ${sl.gr}${lang ? ' · ' + lang : ''}`;
+};
+/** best grade first, ungraded other-language copies last */
+const sortSlabs = (g) => [...g].sort((a, b) => (isGraded(b) ? parseFloat(b.gr) || 0.1 : 0) - (isGraded(a) ? parseFloat(a.gr) || 0.1 : 0));
 
 function money(n, { compact = false } = {}) {
   if (n == null) return '—';
@@ -628,7 +663,9 @@ function fmtDate(d) {
   return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
 }
 // TCGdex images take a quality suffix; cards filled in from pokemontcg.io carry full URLs
-const imgUrl = (c, q = 'low') => (c.img ? `${c.img}/${q}.webp` : (q === 'high' ? c.iml : c.ims) || '');
+// A stamped printing from TCGplayer carries its own photo (v.im) showing the stamp.
+const imgUrl = (c, q = 'low', v = null) =>
+  v?.im ? (q === 'high' ? v.im.replace('_200w', '_in_1000x1000') : v.im) : c.img ? `${c.img}/${q}.webp` : (q === 'high' ? c.iml : c.ims) || '';
 
 const STAMP_NAMES = {
   '1st-edition': '1st Edition', 'pokemon-center': 'Pokémon Center', 'set-logo': 'Set Logo', staff: 'Staff', 'w-promo': 'W Promo',
@@ -636,6 +673,10 @@ const STAMP_NAMES = {
   gamestop: 'GameStop', 'eb-games': 'EB Games', 'top-thirty-two': 'Top 32', 'top-sixteen': 'Top 16', 'top-eight': 'Top 8',
   'semi-finalist': 'Semi-Finalist', finalist: 'Finalist', winner: 'Winner', prerelease: 'Prerelease',
   'no-rarity': 'No Rarity Symbol',
+  'pokemon-league': 'Pokémon League', 'league-promo': 'League Promo', 'trick-or-trade': 'Trick or Trade', 'w-stamped': 'W Stamp',
+  'kids-wb': 'Kids WB', 'toys-r-us-promo': 'Toys "R" Us', 'best-of-game': 'Best of Game', 'play-pokemon': 'Play! Pokémon',
+  'deck-exclusive': 'Deck Exclusive', 'blister-exclusive': 'Blister Exclusive', 'prerelease-kit-exclusive': 'Prerelease Kit',
+  'battle-arena-deck-exclusive': 'Battle Arena Deck', 'professor-program': 'Professor Program',
 };
 const FOIL_NAMES = { cosmos: 'Cosmos Holo', pokeball: 'Poké Ball', masterball: 'Master Ball', galaxy: 'Galaxy Holo', gold: 'Gold', league: 'League', cracked_ice: 'Cracked Ice', 'cracked-ice': 'Cracked Ice' };
 const titleCase = (s) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bPokemon\b/g, 'Pokémon');
@@ -724,7 +765,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
   return `<div class="tile${owned ? ' owned' : ''}${isFoil(v) ? ' foil' : ''}${selected.has(k) ? ' sel' : ''}" data-key="${esc(k)}">
     <span class="selmark" aria-hidden="true"></span>
     <div class="fw"><button class="face" data-act="toggle" aria-pressed="${owned}" title="${owned ? 'Owned – click to remove' : 'Click to mark as owned'}">
-      ${imgUrl(card) ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder"><b>${esc(card.name)}</b>${card.en ? `<span>${esc(card.en)}</span>` : ''}<span>#${esc(card.n)}</span><small>No image yet</small></div>`}
+      ${imgUrl(card, 'low', v) ? `<img class="card-img" src="${esc(imgUrl(card, 'low', v))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder"><b>${esc(card.name)}</b>${card.en ? `<span>${esc(card.en)}</span>` : ''}<span>#${esc(card.n)}</span><small>No image yet</small></div>`}
       <span class="check" aria-hidden="true">✓</span>
       ${q > 1 && !slab ? `<span class="qty">×${q}</span>` : ''}
       ${(() => {
@@ -736,7 +777,11 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
     <button class="info-btn" data-act="info" aria-label="Details for ${esc(card.name)}">i</button></div>
     <div class="cap"><span class="nm" title="${esc(card.name)}${card.en ? ` (${esc(card.en)})` : ''}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) ? '/' + set.official : ''}</span></div>
     <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${
-      slab ? (slab.v != null ? `<span class="value">${money(slabValue(slab, v))}</span>` : '<span class="approx" title="No value entered – counted at the raw price">raw price</span>') : priceHtml(v)
+      slab
+        ? slabSource(slab, card.id) === 'raw'
+          ? '<span class="approx" title="No value entered and no market price for this grade yet – counted at the raw price">raw price</span>'
+          : `<span class="value" title="${slabSource(slab, card.id) === 'market' ? 'Market price for this grade (eBay sold)' : 'Your value'}">${money(slabValue(slab, v, card.id))}</span>`
+        : priceHtml(v)
     }</div>
     ${card.en ? `<div class="enname">${esc(card.en)}</div>` : ''}
     ${showSet ? `<div class="setname">${set.lang && set.lang !== 'en' ? `<span class="langchip">${langInfo(set.lang).short}</span> ` : ''}${esc(set.name)}</div>` : ''}
@@ -1055,18 +1100,27 @@ function openCard(card, set) {
                   ${slabs
                     .map(
                       (sl) => `<div class="slab"><span class="slabchip">${esc(slabLabel(sl))}</span>
-                        <span class="${sl.v != null ? 'value' : 'approx'}">${sl.v != null ? money(slabValue(sl, v)) : `no value set · counted at raw price`}</span>
+                        <span class="${slabSource(sl, card.id) === 'raw' ? 'approx' : 'value'}">${
+                          slabSource(sl, card.id) === 'entered'
+                            ? money(slabValue(sl, v, card.id))
+                            : slabSource(sl, card.id) === 'market'
+                              ? `${money(slabValue(sl, v, card.id))} <small class="muted">market</small>`
+                              : isGraded(sl)
+                                ? 'no value yet · counted at raw price'
+                                : '≈ English price'
+                        }</span>
                         ${sl.cert ? `<span class="muted">Cert ${esc(sl.cert)}</span>` : '<span></span>'}
                         <button class="slab-x" data-rmslab="${esc(sl.id)}" data-vk="${esc(v.k)}" aria-label="Remove ${esc(slabLabel(sl))}">✕</button></div>`,
                     )
                     .join('')}
-                  ${addingSlab === v.k ? slabFormHtml(card, set, v) : `<button class="btn sm" data-addslab="${esc(v.k)}">+ Add graded copy</button>`}
+                  ${addingSlab === v.k ? slabFormHtml(card, set, v) : `<button class="btn sm" data-addslab="${esc(v.k)}">+ Add graded or other-language copy</button>`}
                 </div>
               </div>`;
             })
             .join('')}
         </div>
-        <p class="muted small-note">The − / + buttons count raw (ungraded) copies. Graded copies are added separately with their own value.</p>
+        <p class="muted small-note">The − / + buttons count raw English copies. Graded copies and copies in other languages are added separately, each with its own value.</p>
+        ${gradedPricesHtml(card)}
         <div class="ext-links">
           <a class="btn sm" target="_blank" rel="noopener" href="https://www.tcgplayer.com/search/pokemon/product?q=${encodeURIComponent(card.name + ' ' + set.name)}">TCGplayer ↗</a>
           <a class="btn sm" target="_blank" rel="noopener" href="https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${encodeURIComponent(card.name)}">Cardmarket ↗</a>
@@ -1124,26 +1178,41 @@ function openCard(card, set) {
     }
   };
   modal.onchange = (e) => {
-    // keep the eBay link in step with the chosen grader and grade
+    // keep the eBay link and hints in step with the chosen language, grader and grade
     const f = e.target.closest('.slabform');
-    if (f) f.querySelector('.ebay-grade').href = ebayGradedUrl(card, set, f.elements.co.value, f.elements.gr.value);
+    if (!f) return;
+    const { lang, co, gr } = f.elements;
+    gr.disabled = co.value === 'Raw';
+    f.querySelector('.ebay-grade').href = ebayGradedUrl(card, set, co.value, gr.value, lang.value);
+    const m = co.value !== 'Raw' ? GRADED[card.id]?.usd?.[`${co.value} ${gr.value}`] : null;
+    f.querySelector('[data-hint]').textContent =
+      co.value === 'Raw' && lang.value === 'EN' ? 'Raw English copies are counted with the − / + buttons.'
+      : m != null && lang.value === 'EN' ? `Market price for ${co.value} ${gr.value}: ${money(toCur(m, 'USD'))} – leave the value empty to use it.`
+      : lang.value !== 'EN' ? 'There is no price feed for this language – enter a value, or it counts at the English price.'
+      : '';
   };
   modal.onsubmit = (e) => {
     const f = e.target.closest('.slabform');
     if (!f) return;
     e.preventDefault();
     const val = f.elements.v.value.trim();
-    addGraded(card.id, f.dataset.vk, {
-      co: f.elements.co.value,
-      gr: f.elements.gr.value,
-      v: val === '' ? null : Math.max(0, Number(val)),
-      cur: prefs.currency,
-      cert: f.elements.cert.value.trim() || undefined,
-    });
+    const co = f.elements.co.value, lang = f.elements.lang.value;
+    if (co === 'Raw' && lang === 'EN') {
+      setQty(card.id, f.dataset.vk, rawOf(card.id, f.dataset.vk) + 1); // a plain raw copy
+    } else {
+      addGraded(card.id, f.dataset.vk, {
+        co,
+        gr: co === 'Raw' ? '' : f.elements.gr.value,
+        lang: lang === 'EN' ? undefined : lang,
+        v: val === '' ? null : Math.max(0, Number(val)),
+        cur: prefs.currency,
+        cert: f.elements.cert.value.trim() || undefined,
+      });
+    }
     addingSlab = null;
     changedWhileModal = true;
     render();
-    toast('Graded copy added');
+    toast(co === 'Raw' ? `${copyLangName(lang)} copy added` : 'Graded copy added');
   };
   changedWhileModal = false;
   modal.showModal();
@@ -1151,18 +1220,32 @@ function openCard(card, set) {
 let changedWhileModal = false;
 let addingSlab = null; // variant key whose "add graded copy" form is open
 const curSymbol = () => ({ GBP: '£', USD: '$', EUR: '€' })[prefs.currency];
-const ebayGradedUrl = (card, set, co, gr) =>
-  `https://www.ebay.co.uk/sch/i.html?_nkw=${encodeURIComponent(`${co} ${gr} ${card.name} ${set.name} ${card.n}`)}&LH_Sold=1&LH_Complete=1`;
+const ebayGradedUrl = (card, set, co, gr, lang) =>
+  `https://www.ebay.co.uk/sch/i.html?_nkw=${encodeURIComponent(
+    `${co !== 'Raw' ? `${co} ${gr} ` : ''}${lang && lang !== 'EN' ? copyLangName(lang) + ' ' : ''}${card.name} ${set.name} ${card.n}`,
+  )}&LH_Sold=1&LH_Complete=1`;
+/** market prices by grade for a card, if the daily job has fetched them */
+function gradedPricesHtml(card) {
+  const g = GRADED[card.id]?.usd;
+  if (!g || !Object.keys(g).length) return '';
+  const order = (k) => -(parseFloat(k.split(' ')[1]) || 0) + (k.startsWith('PSA') ? 0 : 0.01);
+  const rows = Object.entries(g).sort((a, b) => order(a[0]) - order(b[0]));
+  return `<div class="graded-prices"><h3>Graded market prices</h3>
+    <div class="gp-list">${rows.map(([grade, usd]) => `<div><span class="slabchip">${esc(grade)}</span><span class="value">${money(toCur(usd, 'USD'))}</span></div>`).join('')}</div>
+    <p class="muted small-note">eBay sold prices via Pokemon Price Tracker, ${GRADED[card.id].t ? 'checked ' + new Date(GRADED[card.id].t).toLocaleDateString() : ''}. Graded copies without your own value use these.</p></div>`;
+}
 function slabFormHtml(card, set, v) {
   return `<form class="slabform" data-vk="${esc(v.k)}">
-    <label>Grader<select name="co">${GRADERS.map((g) => `<option>${g}</option>`).join('')}</select></label>
+    <label>Language<select name="lang">${COPY_LANGS.map(([c, n]) => `<option value="${c}">${n}</option>`).join('')}</select></label>
+    <label>Grader<select name="co"><option value="Raw">Not graded</option>${GRADERS.map((g) => `<option${g === 'PSA' ? ' selected' : ''}>${g}</option>`).join('')}</select></label>
     <label>Grade<select name="gr">${GRADES.map((g) => `<option>${g}</option>`).join('')}</select></label>
     <label>Value (${curSymbol()})<input name="v" type="number" min="0" step="0.01" inputmode="decimal" placeholder="optional"></label>
     <label>Cert no.<input name="cert" type="text" maxlength="20" placeholder="optional" autocomplete="off"></label>
     <div class="slabform-actions">
-      <button class="btn sm primary" type="submit">Save graded copy</button>
+      <button class="btn sm primary" type="submit">Save copy</button>
       <button class="btn sm" type="button" data-cancelslab>Cancel</button>
-      <a class="ebay-grade" href="${ebayGradedUrl(card, set, 'PSA', '10')}" target="_blank" rel="noopener">Check eBay sold prices for this grade ↗</a>
+      <a class="ebay-grade" href="${ebayGradedUrl(card, set, 'PSA', '10', 'EN')}" target="_blank" rel="noopener">Check eBay sold prices for this copy ↗</a>
+      <span class="slabform-hint muted" data-hint></span>
     </div>
   </form>`;
 }
@@ -1222,7 +1305,7 @@ async function pagePortfolio() {
         const hv = heldValue(card.id, v);
         const slabs = gradedOf(card.id, v.k);
         // a card's headline value: its best single copy (raw price or best graded value)
-        const p = Math.max(rawOf(card.id, v.k) ? priceNum(v) : 0, ...slabs.map((sl) => slabValue(sl, v)));
+        const p = Math.max(rawOf(card.id, v.k) ? priceNum(v) : 0, ...slabs.map((sl) => slabValue(sl, v, card.id)));
         sOwned++;
         copies += q;
         sValue += hv.total;
@@ -1230,7 +1313,7 @@ async function pagePortfolio() {
         gradedTotal += hv.graded;
         if (p) priced++;
         entries.push({ card, v, set: s, p, t: collection[keyOf(card.id, v.k)].t });
-        for (const sl of slabs) slabEntries.push({ card, v, set: s, sl, p: slabValue(sl, v) });
+        for (const sl of slabs) if (isGraded(sl)) slabEntries.push({ card, v, set: s, sl, p: slabValue(sl, v, card.id) });
       }
       if (any) sCards++;
     }
@@ -1631,7 +1714,7 @@ async function pageCards() {
       } else e.also = null;
       if (prefs.exFilter === 'owned' && !qtyOf(e.card.id, e.v.k)) return false;
       if (prefs.exFilter === 'missing' && qtyOf(e.card.id, e.v.k)) return false;
-      if (prefs.exFilter === 'graded' && !gradedOf(e.card.id, e.v.k).length) return false;
+      if (prefs.exFilter === 'graded' && !gradedOf(e.card.id, e.v.k).some(isGraded)) return false;
       return true;
     });
     const s = prefs.exSort;
@@ -2214,6 +2297,7 @@ async function route(keepScroll = false) {
   const y = window.scrollY;
   if (modal.open) modal.close();
   try {
+    await getGraded();
     if (name === 'portfolio' || name === '') await pagePortfolio();
     else if (name === 'sets') await pageSets();
     else if (name === 'set') await pageSet(decodeURIComponent(arg || ''));

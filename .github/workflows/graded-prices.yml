@@ -1,0 +1,35 @@
+name: Fetch graded prices
+
+# Daily: graded (PSA/CGC/BGS) market prices from Pokemon Price Tracker for ~45 cards,
+# most valuable first. Needs the repository secret PPT_API_KEY (free key from
+# https://www.pokemonpricetracker.com/api-keys); without it the job does nothing.
+on:
+  schedule:
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data-updates
+  cancel-in-progress: false
+
+jobs:
+  graded:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/fetch-graded.mjs
+        env:
+          PPT_API_KEY: ${{ secrets.PPT_API_KEY }}
+      - name: Commit graded prices
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/graded.json 2>/dev/null || exit 0
+          git diff --cached --quiet || git commit -m "Update graded prices"
+          git pull --rebase && git push

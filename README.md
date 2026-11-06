@@ -20,10 +20,17 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
   16-pocket (4×4), with two-page spreads on wide screens.
 - **Prices in £ (default), $ or €** – pounds use Cardmarket prices at today's exchange rate, dollars use TCGplayer.
   Set pages and the portfolio load live prices when opened (cached for 12 hours).
-- **Graded cards** – add PSA / CGC / BGS / SGC / TAG / ACE copies with grade, your own value and cert number
-  (open a card's **i** details). The portfolio splits raw and graded value and lists your slabs; the Card Explorer
-  has a *Graded* filter. There is no free source of graded prices, so values are entered by you (each card links
-  to eBay sold listings for that grade); a slab without a value counts at the raw price.
+- **Stamped & exclusive printings** – League / Championship / Staff stamps, Professor Program, Prerelease kits, deck and
+  blister exclusives (Cosmos, Cracked Ice), calendars, Trick or Trade and Battle Academy versions are part of each master set,
+  with their own photo and TCGplayer price (from TCGplayer's catalogue via [tcgcsv.com](https://tcgcsv.com), `scripts/add-stamps.mjs`).
+- **Graded and other-language copies** – in a card's **i** details add copies with a language (German, Japanese…) and/or a
+  grade (PSA / CGC / BGS / SGC / TAG / ACE). The portfolio splits raw and graded value; the Card Explorer has a *Graded* filter.
+- **Graded market prices** – a daily job fetches eBay sold prices by grade (PSA 10, PSA 9, CGC 9.5…) from
+  [Pokemon Price Tracker](https://www.pokemonpricetracker.com) for ~45 cards a day, most valuable first, into `data/graded.json`.
+  Graded copies without your own value use these. **Setup:** get a free API key at
+  https://www.pokemonpricetracker.com/api-keys, then in this repo go to *Settings → Secrets and variables → Actions →
+  New repository secret*, name it `PPT_API_KEY`, paste the key, and run the *Fetch graded prices* workflow once.
+  There is no free price source per card language, so other-language copies use your value or the English price.
 - **My binders** – make your own binders (a favourite Pokémon, an artist, a theme) from any cards in any set:
   search, tap to add, or *Add all results*; reorder with Select → Move to start / end; view as a grid or a
   flip-through binder. Binders sync with your collection.

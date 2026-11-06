@@ -99,11 +99,44 @@ function insertCard(cards, card) {
   cards.splice(at, 0, card);
 }
 
+/** put the extra cards into a set file and update its totals */
+async function applyExtras(meta, extras) {
+  const file = path.join(OUT, 'sets', `${meta.id}.json`);
+  if (!existsSync(file)) return 0;
+  const set = JSON.parse(await readFile(file, 'utf8'));
+  set.cards = set.cards.filter((c) => c.src !== 'ptcg');
+  const have = new Set(set.cards.map((c) => numKey(c.n).toLowerCase()));
+  const add = extras.filter((c) => !have.has(numKey(c.n).toLowerCase())); // TCGdex may have caught up
+  for (const card of add) insertCard(set.cards, card);
+  set.total = set.cards.length;
+  set.variants = set.cards.reduce((a, c) => a + c.v.length, 0);
+  const vs = set.cards.flatMap((c) => c.v);
+  set.valueUSD = Math.round(vs.reduce((a, v) => a + (v.u ?? (v.e ?? 0) * EUR_TO_USD), 0) * 100) / 100;
+  set.valueEUR = Math.round(vs.reduce((a, v) => a + (v.e ?? (v.u ?? 0) / EUR_TO_USD), 0) * 100) / 100;
+  await writeFile(file, JSON.stringify(set));
+  Object.assign(meta, { total: set.total, variants: set.variants, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
+  return add.length;
+}
+
 export async function fillGaps({ log = console.log } = {}) {
   const indexPath = path.join(OUT, 'sets.json');
   if (!existsSync(indexPath)) throw new Error('Run build-data.mjs first');
   const index = JSON.parse(await readFile(indexPath, 'utf8'));
-  const ptcgSets = (await get(`${API}/sets?pageSize=250`)).data;
+  // data/extra-cards.json keeps the last good copy, so a pokemontcg.io outage never drops cards
+  const cachePath = path.join(OUT, 'extra-cards.json');
+  const cache = existsSync(cachePath) ? JSON.parse(await readFile(cachePath, 'utf8')) : {};
+  const byMeta = new Map(index.sets.map((s) => [s.id, s]));
+  let ptcgSets;
+  try {
+    ptcgSets = (await get(`${API}/sets?pageSize=250`)).data;
+  } catch (e) {
+    log(`pokemontcg.io unavailable (${e.message}) – using the saved extra cards`);
+    let n = 0;
+    for (const [id, extras] of Object.entries(cache)) if (byMeta.has(id)) n += await applyExtras(byMeta.get(id), extras);
+    await writeFile(indexPath, JSON.stringify(index));
+    log(`Restored ${n} saved cards`);
+    return n;
+  }
   const byNameDate = new Map(ptcgSets.map((s) => [norm(s.name) + '|' + s.releaseDate.slice(0, 7).replace('/', '-'), s]));
   const byName = new Map();
   for (const s of ptcgSets) byName.set(norm(s.name), byName.has(norm(s.name)) ? null : s);
@@ -120,18 +153,28 @@ export async function fillGaps({ log = console.log } = {}) {
     if (!p) continue;
     const file = path.join(OUT, 'sets', `${meta.id}.json`);
     const set = JSON.parse(await readFile(file, 'utf8'));
-    // drop cards added by an earlier run so re-runs stay clean
     set.cards = set.cards.filter((c) => c.src !== 'ptcg');
     if (p.total <= set.cards.length) continue;
     const have = new Set(set.cards.map((c) => numKey(c.n).toLowerCase()));
     const cards = [];
-    for (let page = 1; page <= 5; page++) {
-      const r = await get(`${API}/cards?q=set.id:${p.id}&pageSize=250&page=${page}&select=id,number,name,rarity,supertype,types,artist,images,tcgplayer,cardmarket`);
-      cards.push(...r.data);
-      if (r.data.length < 250) break;
+    try {
+      for (let page = 1; page <= 5; page++) {
+        const r = await get(`${API}/cards?q=set.id:${p.id}&pageSize=250&page=${page}&select=id,number,name,rarity,supertype,types,artist,images,tcgplayer,cardmarket`);
+        cards.push(...r.data);
+        if (r.data.length < 250) break;
+      }
+    } catch (e) {
+      const n = cache[meta.id] ? await applyExtras(meta, cache[meta.id]) : 0;
+      log(`  ${meta.id}: pokemontcg.io failed (${e.message.slice(0, 60)}) – kept ${n} saved cards`);
+      added += n;
+      continue;
     }
     const missing = cards.filter((c) => !have.has(numKey(c.number).toLowerCase()));
-    if (!missing.length) continue;
+    if (!missing.length) {
+      delete cache[meta.id];
+      continue;
+    }
+    const extras = [];
     for (const c of missing) {
       const card = { id: `${set.id}-${c.number}`, n: c.number, name: c.name, src: 'ptcg' };
       if (c.images?.small) (card.ims = c.images.small), (card.iml = c.images.large || c.images.small);
@@ -140,18 +183,14 @@ export async function fillGaps({ log = console.log } = {}) {
       if (c.artist) card.ill = c.artist;
       if (c.types) card.ty = c.types;
       card.v = variantsFor(c);
-      insertCard(set.cards, card);
+      extras.push(card);
     }
-    set.total = set.cards.length;
-    set.variants = set.cards.reduce((a, c) => a + c.v.length, 0);
-    const vs = set.cards.flatMap((c) => c.v);
-    set.valueUSD = Math.round(vs.reduce((a, v) => a + (v.u ?? (v.e ?? 0) * EUR_TO_USD), 0) * 100) / 100;
-    set.valueEUR = Math.round(vs.reduce((a, v) => a + (v.e ?? (v.u ?? 0) / EUR_TO_USD), 0) * 100) / 100;
-    await writeFile(file, JSON.stringify(set));
-    Object.assign(meta, { total: set.total, variants: set.variants, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
+    cache[meta.id] = extras;
+    await applyExtras(meta, extras);
     added += missing.length;
     log(`  ${meta.id} ${meta.name}: +${missing.length} from pokemontcg.io (${missing.map((c) => c.number).join(', ')})`);
   }
+  await writeFile(cachePath, JSON.stringify(cache));
   index.source = 'TCGdex (tcgdex.dev) + pokemontcg.io';
   await writeFile(indexPath, JSON.stringify(index));
   log(`Filled ${added} missing cards`);
