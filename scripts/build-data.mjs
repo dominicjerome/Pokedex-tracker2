@@ -14,7 +14,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fillGaps } from './fill-gaps.mjs';
-import { addStamps } from './add-stamps.mjs';
+import { addStamps, completeJapanese } from './add-stamps.mjs';
 import { fillImages } from './fill-images.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -247,8 +247,32 @@ async function buildSet(brief, seriesOrder) {
   return index;
 }
 
+/**
+ * Recount every set in the index from its set file, after all the extra steps (gap cards, stamps,
+ * completed printings) have run. `regular` = printings that aren't stamped, for the site's
+ * "Stamped: Hide" setting.
+ */
+async function finalizeIndex() {
+  const indexPath = path.join(OUT, 'sets.json');
+  if (!existsSync(indexPath)) return;
+  const index = JSON.parse(await readFile(indexPath, 'utf8'));
+  const stamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
+  for (const meta of index.sets) {
+    const file = path.join(OUT, 'sets', `${PREFIX ? meta.id.slice(PREFIX.length) : meta.id}.json`);
+    if (!existsSync(file)) continue;
+    const set = JSON.parse(await readFile(file, 'utf8'));
+    const vs = set.cards.flatMap((c) => c.v);
+    const sum = (key) => Math.round(vs.reduce((a, v) => a + (v[key] ?? (key === 'u' ? (v.e ?? 0) * EUR_TO_USD : (v.u ?? 0) / EUR_TO_USD)), 0) * 100) / 100;
+    Object.assign(set, { total: set.cards.length, variants: vs.length, valueUSD: sum('u'), valueEUR: sum('e') });
+    await writeFile(file, JSON.stringify(set));
+    Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
+  }
+  await writeFile(indexPath, JSON.stringify(index));
+}
+
 async function main() {
   await mkdir(path.join(OUT, 'sets'), { recursive: true });
+  if (process.argv.includes('--finalize-only')) return finalizeIndex();
   const only = process.argv.slice(2).filter((a) => !a.startsWith('--'));
   if (PREFIX) await loadSpecies();
   const [sets, series] = await Promise.all([get(`${API}/sets`), get(`${API}/series`)]);
@@ -299,14 +323,14 @@ async function main() {
   } catch (e) {
     console.error('Filling images failed:', e.message);
   }
-  // stamped / exclusive printings of set cards from TCGplayer's catalogue
-  if (LANG === 'en') {
-    try {
-      await addStamps();
-    } catch (e) {
-      console.error('Adding stamped printings failed:', e.message);
-    }
+  // stamped / exclusive / missing regular printings from TCGplayer's catalogue
+  try {
+    if (LANG === 'en') await addStamps();
+    if (LANG === 'ja') await completeJapanese();
+  } catch (e) {
+    console.error('Completing printings from TCGplayer failed:', e.message);
   }
+  await finalizeIndex();
 }
 
 main().catch((e) => {

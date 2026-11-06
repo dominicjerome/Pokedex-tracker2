@@ -420,6 +420,7 @@ function applyLive(card) {
   for (const v of card.v) {
     const lp = p[v.k];
     if (!lp) continue;
+    if (v.im || v.src) continue; // keep TCGplayer's own price for stamped / added printings
     if (lp[0] != null) v.u = lp[0];
     if (lp[1] != null) v.e = lp[1];
   }
@@ -557,9 +558,11 @@ async function getSets(ids, onProgress) {
 }
 
 /** owned slot count per set straight from the collection keys */
+/** owned printings per set (stamped ones left out while they're hidden) */
 function ownedBySet() {
   const m = new Map();
   for (const k of Object.keys(collection)) {
+    if (prefs.stamps === 'hide' && isStampedKey(k)) continue;
     const sid = setIdOfCard(k.split('|')[0]);
     m.set(sid, (m.get(sid) || 0) + 1);
   }
@@ -671,7 +674,7 @@ const STAMP_NAMES = {
   '1st-edition': '1st Edition', 'pokemon-center': 'Pokémon Center', 'set-logo': 'Set Logo', staff: 'Staff', 'w-promo': 'W Promo',
   'player-rewards-program': 'Play! Pokémon', 'prize-pack-series-1': 'Series 1', 'prize-pack-series-2': 'Series 2',
   'prize-pack-series-3': 'Series 3', 'prize-pack-series-4': 'Series 4', 'prize-pack-series-5': 'Series 5', 'prize-pack-series-6': 'Series 6',
-  'prize-pack-series-7': 'Series 7', 'prize-pack-series-8': 'Series 8', 'left-stamp': 'Left Stamp', 'right-stamp': 'Right Stamp', 'professor-program': 'Professor', 'pokemon-together': 'Pokémon Together',
+  'prize-pack-series-7': 'Series 7', 'prize-pack-series-8': 'Series 8', 'left-stamp': 'Left Stamp', 'right-stamp': 'Right Stamp', 'pokemon-together': 'Pokémon Together',
   gamestop: 'GameStop', 'eb-games': 'EB Games', 'top-thirty-two': 'Top 32', 'top-sixteen': 'Top 16', 'top-eight': 'Top 8',
   'semi-finalist': 'Semi-Finalist', finalist: 'Finalist', winner: 'Winner', prerelease: 'Prerelease',
   'no-rarity': 'No Rarity Symbol',
@@ -680,7 +683,11 @@ const STAMP_NAMES = {
   'deck-exclusive': 'Deck Exclusive', 'blister-exclusive': 'Blister Exclusive', 'prerelease-kit-exclusive': 'Prerelease Kit',
   'battle-arena-deck-exclusive': 'Battle Arena Deck', 'professor-program': 'Professor Program',
 };
-const FOIL_NAMES = { cosmos: 'Cosmos Holo', pokeball: 'Poké Ball', masterball: 'Master Ball', galaxy: 'Galaxy Holo', gold: 'Gold', league: 'League', cracked_ice: 'Cracked Ice', 'cracked-ice': 'Cracked Ice' };
+const FOIL_NAMES = {
+  cosmos: 'Cosmos Holo', pokeball: 'Poké Ball', masterball: 'Master Ball', galaxy: 'Galaxy Holo', gold: 'Gold', league: 'League',
+  cracked_ice: 'Cracked Ice', 'cracked-ice': 'Cracked Ice', energy: 'Energy Symbol', duskball: 'Dusk Ball', loveball: 'Love Ball',
+  friendball: 'Friend Ball', quickball: 'Quick Ball', 'team-rocket': 'Team Rocket', wave: 'Wave Foil', tinsel: 'Tinsel Holo',
+};
 const titleCase = (s) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bPokemon\b/g, 'Pokémon');
 
 /** [{text, cls}] badges describing the printing */
@@ -702,11 +709,17 @@ function variantBadges(v, card) {
   if (v.t === 'holo' && !plain && !v.f) out.push({ text: '(Holo)', cls: 'holo' });
   return out;
 }
-const variantName = (v, card) => variantBadges(v, card).map((b) => b.text).join(' · ') || (v.t === 'holo' ? 'Holo' : 'Normal');
 const badgesHtml = (v, card) => variantBadges(v, card).map((b) => `<span class="badge ${b.cls}">${esc(b.text)}</span>`).join('');
 const isFoil = (v) => v.t !== 'normal' || !!v.f;
-/** stamped / exclusive printing (1st Edition doesn't count – it's part of every classic master set) */
-const isStamped = (v) => v.src === 'tcgp' || (v.s || []).some((x) => x !== '1st-edition');
+/** stamped / exclusive printing. 1st Edition doesn't count (it's part of every classic master set), nor does
+ *  the set logo on EX-era reverse holos (that *is* their reverse holo). */
+const isStamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
+/** the same test from a collection key ("cardId|holo#staff") */
+const isStampedKey = (key) => {
+  const vk = key.split('|')[1] || '';
+  const stamps = (vk.split('#')[1] || '').split('@')[0].split('+').filter(Boolean);
+  return stamps.some((x) => x !== '1st-edition') && !(vk.startsWith('reverse') && stamps.join() === 'set-logo');
+};
 /** printings shown with the current "Stamped: show / hide" setting */
 const visibleV = (card) => (prefs.stamps === 'hide' ? card.v.filter((v) => !isStamped(v)) : card.v);
 
@@ -1304,9 +1317,13 @@ async function pagePortfolio() {
   const perSet = [];
   const perSeries = new Map();
   for (const s of sets) {
-    let sOwned = 0, sValue = 0, sCards = 0;
+    let sOwned = 0, sValue = 0, sCards = 0, sShown = 0, sShownOwned = 0;
     for (const card of s.cards) {
       let any = false;
+      for (const v of visibleV(card)) {
+        sShown++;
+        if (qtyOf(card.id, v.k)) sShownOwned++;
+      }
       for (const v of card.v) {
         const q = qtyOf(card.id, v.k);
         if (!q) continue;
@@ -1328,17 +1345,17 @@ async function pagePortfolio() {
     }
     slots += sOwned;
     total += sValue;
-    perSet.push({ s, sOwned, sValue, sCards });
+    perSet.push({ s, sOwned, sValue, sCards, sShown, sShownOwned });
     const era = s.seriesName + (s.lang && s.lang !== 'en' ? ` (${langInfo(s.lang).short})` : '');
     const ser = perSeries.get(era) || { v: 0, n: 0, order: meta.get(s.id)?.seriesOrder ?? 99 };
     ser.v += sValue;
     ser.n += sOwned;
     perSeries.set(era, ser);
   }
-  const complete = perSet.filter((x) => x.sOwned >= x.s.variants).length;
+  const complete = perSet.filter((x) => x.sShown && x.sShownOwned >= x.sShown).length;
   const top = [...entries].sort((a, b) => b.p - a.p).slice(0, 12);
   const recent = [...entries].sort((a, b) => b.t - a.t).slice(0, 12);
-  const progress = [...perSet].sort((a, b) => b.sOwned / b.s.variants - a.sOwned / a.s.variants);
+  const progress = [...perSet].sort((a, b) => b.sShownOwned / (b.sShown || 1) - a.sShownOwned / (a.sShown || 1));
   const series = [...perSeries.entries()].sort((a, b) => b[1].v - a[1].v);
   const maxSeries = Math.max(1, ...series.map((x) => x[1].v));
   const best = top[0];
@@ -1385,12 +1402,12 @@ async function pagePortfolio() {
         <h2 class="section">Set progress <small>master set completion</small></h2>
         <div class="progress-list">
           ${progress
-            .map(({ s, sOwned, sValue, sCards }) => {
-              const p = pct(sOwned, s.variants);
+            .map(({ s, sValue, sCards, sShown, sShownOwned }) => {
+              const p = pct(sShownOwned, sShown);
               return `<a class="progress-item" href="#/set/${encodeURIComponent(s.id)}">
                 ${s.logo ? `<img src="${esc(s.logo)}.webp" alt="" loading="lazy" data-fallback="">` : '<span></span>'}
                 <div><div class="name">${esc(s.name)}</div>${bar(p, p >= 100)}
-                  <div class="meta"><span>${num(sOwned)}/${num(s.variants)} printings · ${num(sCards)}/${num(s.total)} cards</span><span class="value">${money(sValue)}</span></div></div>
+                  <div class="meta"><span>${num(sShownOwned)}/${num(sShown)} printings · ${num(sCards)}/${num(s.total)} cards</span><span class="value">${money(sValue)}</span></div></div>
                 <div class="pct">${p}%</div></a>`;
             })
             .join('')}
@@ -1413,8 +1430,10 @@ async function pagePortfolio() {
   startLive(ownedCards, () => pagePortfolio());
 }
 
+/** master-set size from the set index, following the stamped toggle */
+const setSlots = (s) => (prefs.stamps === 'hide' ? s.regular ?? s.variants : s.variants);
 function setCardHtml(s, ownedCount) {
-  const p = pct(ownedCount, s.variants);
+  const p = pct(ownedCount, setSlots(s));
   const cls = p >= 100 ? 'complete' : ownedCount ? 'started' : '';
   const value = setValue(s);
   return `<a class="set-card ${cls}" href="#/set/${encodeURIComponent(s.id)}">
@@ -1422,7 +1441,7 @@ function setCardHtml(s, ownedCount) {
     <div class="title">${s.symbol ? `<img src="${esc(s.symbol)}.webp" alt="" loading="lazy" data-fallback="">` : ''}<span>${esc(s.name)}</span></div>
     <div class="sub"><span>${fmtDate(s.releaseDate)}${s.code || s.lang ? ' · ' + esc(s.code || rawId(s.id)) : ''}</span><span>${num(s.total)} cards</span></div>
     ${bar(p, p >= 100)}
-    <div class="sub"><span>${num(ownedCount)}/${num(s.variants)} printings</span><span>${value ? `<span class="value">${money(value, { compact: true })}</span> set` : ''}</span></div>
+    <div class="sub"><span>${num(ownedCount)}/${num(setSlots(s))} printings</span><span>${value ? `<span class="value">${money(value, { compact: true })}</span> set` : ''}</span></div>
   </a>`;
 }
 
@@ -1484,12 +1503,12 @@ async function pageSets() {
       for (const g of gs) {
         g.sets.sort((a, b) => dir * (a.releaseDate || '').localeCompare(b.releaseDate || ''));
         const o = g.sets.reduce((a, s) => a + (owned.get(s.id) || 0), 0);
-        const t = g.sets.reduce((a, s) => a + s.variants, 0);
+        const t = g.sets.reduce((a, s) => a + setSlots(s), 0);
         html.push(`<section class="series-block"><div class="series-head"><h2>${esc(g.name)}</h2><span class="muted">${g.sets.length} sets · ${num(o)}/${num(t)} printings</span></div>
           <div class="set-grid">${g.sets.map((s) => setCardHtml(s, owned.get(s.id) || 0)).join('')}</div></section>`);
       }
     } else {
-      const key = sort === 'value' ? (s) => val(s) : (s) => (owned.get(s.id) || 0) / s.variants;
+      const key = sort === 'value' ? (s) => val(s) : (s) => (owned.get(s.id) || 0) / setSlots(s);
       list = [...list].sort((a, b) => key(b) - key(a));
       html.push(`<div class="set-grid">${list.map((s) => setCardHtml(s, owned.get(s.id) || 0)).join('')}</div>`);
     }
@@ -1525,7 +1544,6 @@ async function pageSet(id) {
     app.innerHTML = `<div class="empty"><h3>Set not found</h3><a class="btn" href="#/sets">Back to sets</a></div>`;
     return;
   }
-  const meta = idx.byId.get(id) || set;
   await getCameos();
 
   app.innerHTML = `
@@ -2148,7 +2166,7 @@ async function pageSettings() {
     <div class="settings" style="margin-top:20px">
       <section class="panel" id="syncpanel"></section>
       <section class="panel"><h3>Back up your collection</h3>
-        <p>Your collection (${num(n)} printings) is saved in this browser${Sync.enabled ? ' and synced to GitHub' : ''}. You can also export it to a file as a backup.</p>
+        <p>Your collection (${num(n)} printings) and binders are saved in this browser${Sync.enabled ? ' and synced to GitHub' : ''}. You can also export them to a file as a backup.</p>
         <div class="row"><button class="btn primary" id="export">⬇ Export collection</button>
         <label class="btn">⬆ Import file<input type="file" id="import" accept="application/json,.json" hidden></label></div>
       </section>
@@ -2156,6 +2174,11 @@ async function pageSettings() {
         <p><b>Pounds (default)</b> use Cardmarket prices converted at today's exchange rate (£1 = €${(1 / FX.GBP).toFixed(3)}${FX.date ? `, rate from ${new Date(FX.date).toLocaleDateString()}` : ''}).
         <b>US dollars</b> use TCGplayer market prices and <b>euros</b> use Cardmarket trend prices.
         When a printing has no price in the selected market it is converted from the other one and marked with ≈.</p>
+        <p>Graded market prices (PSA, CGC, BGS…): ${
+          Object.keys(GRADED).length
+            ? `${num(Object.values(GRADED).filter((g) => Object.keys(g.usd || {}).length).length)} cards covered${GRADED_UPDATED ? `, updated ${new Date(GRADED_UPDATED).toLocaleDateString()}` : ''}.`
+            : 'not set up yet – add a free Pokemon Price Tracker API key as the <code>PPT_API_KEY</code> repository secret (see the README).'
+        }</p>
         <p>Set pages and your portfolio load live prices when you open them (kept for 12 hours). Everything else uses the saved prices from
         <b>${idx.updated ? new Date(idx.updated).toLocaleString() : 'unknown'}</b>.</p>
       </section>
@@ -2167,7 +2190,7 @@ async function pageSettings() {
         <button class="btn danger" id="reset">Delete my collection</button></section>
     </div>`;
   $('#export').onclick = () => {
-    const blob = new Blob([JSON.stringify({ app: 'pokevault', version: 1, exported: new Date().toISOString(), collection }, null, 1)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ app: 'pokevault', version: 2, exported: new Date().toISOString(), collection, binders }, null, 1)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `pokevault-collection-${new Date().toISOString().slice(0, 10)}.json`;
@@ -2194,8 +2217,15 @@ async function pageSettings() {
         delete tombs[k];
         added++;
       }
+      // binders from the backup (a newer copy of the same binder wins)
+      let nb = 0;
+      for (const [id, b] of Object.entries(data.binders || {})) {
+        if (!b || typeof b !== 'object' || !Array.isArray(b.cards ?? []) || (binders[id] && (binders[id].m || 0) >= (b.m || 0))) continue;
+        binders[id] = { ...b, m: Date.now() };
+        if (!b.del) nb++;
+      }
       saveCollection();
-      toast(`Imported ${added} printings`);
+      toast(`Imported ${added} printings${nb ? ` and ${nb} binder${nb === 1 ? '' : 's'}` : ''}`);
       pageSettings();
     } catch {
       toast('That file is not a PokéVault backup');
@@ -2322,7 +2352,10 @@ async function route(keepScroll = false) {
   pickerToggle = null;
   document.title = 'PokéVault – Card Set Tracker';
   const y = window.scrollY;
-  if (modal.open) modal.close();
+  if (modal.open) {
+    changedWhileModal = false; // we're re-rendering anyway
+    modal.close();
+  }
   try {
     await getGraded();
     if (name === 'portfolio' || name === '') await pagePortfolio();
