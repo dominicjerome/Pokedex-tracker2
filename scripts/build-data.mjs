@@ -252,10 +252,53 @@ async function buildSet(brief, seriesOrder) {
  * completed printings) have run. `regular` = printings that aren't stamped, for the site's
  * "Stamped: Hide" setting.
  */
+/**
+ * Jumbo (oversized) printings aren't part of a set's master set: move them out of every set into one
+ * "Jumbo Cards" set. Card ids become "jumbo-<set>_<number>" (the site migrates owned keys the same way).
+ * Re-running is safe: jumbos already moved stay in the jumbo set.
+ */
+async function extractJumbos(index) {
+  const JUMBO = `${PREFIX}jumbo`;
+  const jumboFile = path.join(OUT, 'sets', 'jumbo.json');
+  const old = existsSync(jumboFile) ? JSON.parse(await readFile(jumboFile, 'utf8')).cards : [];
+  const byId = new Map(old.map((c) => [c.id, c]));
+  for (const meta of index.sets) {
+    if (meta.id === JUMBO) continue;
+    const file = path.join(OUT, 'sets', `${PREFIX ? meta.id.slice(PREFIX.length) : meta.id}.json`);
+    if (!existsSync(file)) continue;
+    const set = JSON.parse(await readFile(file, 'utf8'));
+    let moved = false;
+    for (const c of set.cards) {
+      const jumbos = c.v.filter((v) => v.z === 'jumbo');
+      if (!jumbos.length) continue;
+      c.v = c.v.filter((v) => v.z !== 'jumbo');
+      moved = true;
+      const id = `${JUMBO}-${rawSetId(set.id)}_${c.n}`;
+      const { v, idx, ...rest } = c;
+      byId.set(id, { ...rest, id, src: 'jumbo', from: set.name, fromId: set.id, date: set.releaseDate || '', v: jumbos });
+    }
+    if (!moved) continue;
+    set.cards = set.cards.filter((c) => c.v.length); // a card that only existed as a jumbo
+    await writeFile(file, JSON.stringify(set));
+  }
+  if (!byId.size) return;
+  const cards = [...byId.values()].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id, undefined, { numeric: true }));
+  const jumbo = {
+    id: JUMBO, name: 'Jumbo Cards', lang: LANG, series: `${PREFIX}jumbo`, seriesName: 'Jumbo cards',
+    releaseDate: cards[0].date || null, logo: null, symbol: null, code: null, official: cards.length, total: cards.length,
+    variants: 0, valueUSD: 0, valueEUR: 0, updated: new Date().toISOString(), cards,
+  };
+  await writeFile(jumboFile, JSON.stringify(jumbo));
+  const { cards: _c, ...meta } = jumbo;
+  index.sets = index.sets.filter((s) => s.id !== JUMBO).concat({ ...meta, seriesOrder: 999 });
+}
+const rawSetId = (id) => (PREFIX && id.startsWith(PREFIX) ? id.slice(PREFIX.length) : id);
+
 async function finalizeIndex() {
   const indexPath = path.join(OUT, 'sets.json');
   if (!existsSync(indexPath)) return;
   const index = JSON.parse(await readFile(indexPath, 'utf8'));
+  await extractJumbos(index);
   const stamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
   for (const meta of index.sets) {
     const file = path.join(OUT, 'sets', `${PREFIX ? meta.id.slice(PREFIX.length) : meta.id}.json`);

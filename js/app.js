@@ -80,6 +80,35 @@ function clearCollection() {
   collection = {};
 }
 
+// Jumbo printings now live in their own "Jumbo Cards" set: "sv01-001|holo@jumbo" -> "jumbo-sv01_001|holo@jumbo".
+// Runs on load and after every sync, and leaves a tombstone so other devices drop the old key too.
+function jumboKey(key) {
+  const [cardId, vk] = key.split('|');
+  if (!vk || !vk.includes('@jumbo') || /(^|\/)jumbo-/.test(cardId)) return null;
+  const slash = cardId.indexOf('/') + 1; // language prefix, e.g. "ja/"
+  const dash = cardId.lastIndexOf('-');
+  return `${cardId.slice(0, slash)}jumbo-${cardId.slice(slash, dash)}_${cardId.slice(dash + 1)}|${vk}`;
+}
+function migrateJumbos() {
+  let changed = false;
+  const now = Date.now();
+  for (const k of Object.keys(collection)) {
+    const nk = jumboKey(k);
+    if (!nk) continue;
+    if (!collection[nk]) collection[nk] = { ...collection[k], m: now };
+    delete collection[k];
+    tombs[k] = now;
+    delete tombs[nk];
+    changed = true;
+  }
+  for (const b of Object.values(binders)) {
+    if (!b.cards) continue;
+    const cards = b.cards.map((k) => jumboKey(k) || k);
+    if (cards.join() !== b.cards.join()) ((b.cards = cards), (b.m = now), (changed = true));
+  }
+  return changed;
+}
+
 const keyOf = (cardId, vk) => `${cardId}|${vk}`;
 // An entry is { q: raw copies, g: [graded copies], t: added, m: modified }.
 // Graded copy ("slab"): { id, co: grader, gr: grade, v: value|null, cur: currency of v, cert }
@@ -247,7 +276,9 @@ const Sync = (() => {
         await findOrCreateGist();
         remote = await readRemote();
       }
-      const { localChanged, remoteStale } = merge(remote);
+      const merged = merge(remote);
+      const migrated = migrateJumbos();
+      const localChanged = merged.localChanged || migrated, remoteStale = merged.remoteStale || migrated;
       if (localChanged || remoteStale) saveCollection({ fromSync: true });
       if (remoteStale) {
         await gh(`/gists/${cfg.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [fileName()]: { content: payload() } } }) });
@@ -797,7 +828,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
       })()}
     </button>
     <button class="info-btn" data-act="info" aria-label="Details for ${esc(card.name)}">i</button></div>
-    <div class="cap"><span class="nm" title="${esc(card.name)}${card.en ? ` (${esc(card.en)})` : ''}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) ? '/' + set.official : ''}</span></div>
+    <div class="cap"><span class="nm" title="${esc(card.name)}${card.en ? ` (${esc(card.en)})` : ''}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) && !card.from ? '/' + set.official : ''}</span></div>
     <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${
       slab
         ? slabSource(slab, card.id) === 'raw'
@@ -806,6 +837,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
         : priceHtml(v)
     }</div>
     ${card.en ? `<div class="enname">${esc(card.en)}</div>` : ''}
+    ${card.from && !showSet ? `<div class="setname">from ${esc(card.from)}</div>` : ''}
     ${showSet ? `<div class="setname">${set.lang && set.lang !== 'en' ? `<span class="langchip">${langInfo(set.lang).short}</span> ` : ''}${esc(set.name)}</div>` : ''}
     ${also ? `<div class="also" title="Appears in the artwork"><span class="also-chip">✦ in art</span> ${esc(also)}</div>` : ''}
   </div>`;
@@ -1093,6 +1125,7 @@ function openCard(card, set) {
           ${card.r ? `<dt>Rarity</dt><dd>${esc(card.r)}</dd>` : ''}
           ${card.cat ? `<dt>Category</dt><dd>${esc(card.cat)}${card.ty ? ' · ' + card.ty.map(esc).join(', ') : ''}</dd>` : ''}
           ${card.ill ? `<dt>Illustrator</dt><dd>${esc(card.ill)}</dd>` : ''}
+          ${card.from ? `<dt>Jumbo of</dt><dd><a href="#/set/${encodeURIComponent(card.fromId)}" data-close>${esc(card.from)}</a> #${esc(card.n)}</dd>` : ''}
           <dt>Set</dt><dd><a href="#/set/${encodeURIComponent(set.id)}" data-close>${esc(set.name)}</a> <span class="muted">(${esc(set.seriesName)}, ${fmtDate(set.releaseDate)})</span></dd>
           ${cameosOf(card).length ? `<dt>Also in the art</dt><dd>${cameosOf(card).map(esc).join(', ')}</dd>` : ''}
           <dt>Status</dt><dd>${ownedAny ? '<span style="color:var(--green)">In your collection</span>' : '<span class="muted">Not owned</span>'}</dd>
@@ -1439,7 +1472,7 @@ function setCardHtml(s, ownedCount) {
   return `<a class="set-card ${cls}" href="#/set/${encodeURIComponent(s.id)}">
     <div class="logo">${setLogo(s)}</div>
     <div class="title">${s.symbol ? `<img src="${esc(s.symbol)}.webp" alt="" loading="lazy" data-fallback="">` : ''}<span>${esc(s.name)}</span></div>
-    <div class="sub"><span>${fmtDate(s.releaseDate)}${s.code || s.lang ? ' · ' + esc(s.code || rawId(s.id)) : ''}</span><span>${num(s.total)} cards</span></div>
+    <div class="sub"><span>${fmtDate(s.releaseDate)}${s.code || (s.lang && s.lang !== 'en' && s.series !== s.id) ? ' · ' + esc(s.code || rawId(s.id)) : ''}</span><span>${num(s.total)} cards</span></div>
     ${bar(p, p >= 100)}
     <div class="sub"><span>${num(ownedCount)}/${num(setSlots(s))} printings</span><span>${value ? `<span class="value">${money(value, { compact: true })}</span> set` : ''}</span></div>
   </a>`;
@@ -1553,7 +1586,7 @@ async function pageSet(id) {
         <div>${set.logo ? `<img class="logo" src="${esc(set.logo)}.webp" alt="${esc(set.name)}" data-fallback="${esc(set.name)}">` : ''}</div>
         <div>
           <h1>${esc(set.name)}</h1>
-          <div class="meta"><span>${esc(set.seriesName)}</span><span>Released ${fmtDate(set.releaseDate)}</span>${set.code || set.lang ? `<span>Code ${esc(set.code || rawId(set.id))}</span>` : ''}${set.lang && set.lang !== 'en' ? `<span class="langchip">${esc(langInfo(set.lang).name)}</span>` : ''}<span>${set.official} official + ${Math.max(0, set.total - set.official)} secret</span></div>
+          <div class="meta"><span>${esc(set.seriesName)}</span><span>Released ${fmtDate(set.releaseDate)}</span>${set.code || (set.lang && set.lang !== 'en' && set.series !== set.id) ? `<span>Code ${esc(set.code || rawId(set.id))}</span>` : ''}${set.lang && set.lang !== 'en' ? `<span class="langchip">${esc(langInfo(set.lang).name)}</span>` : ''}<span>${set.official} official + ${Math.max(0, set.total - set.official)} secret</span></div>
           <div class="live" id="live"></div>
         </div>
         <div id="ring"></div>
@@ -1618,7 +1651,7 @@ async function pageSet(id) {
     let list = [];
     for (const card of set.cards) {
       const numHit = q && (card.n.toLowerCase() === q || card.n.replace(/^0+/, '') === q.replace(/^0+/, ''));
-      const hit = numHit ? { by: 'name' } : searchHit(card, q);
+      const hit = numHit ? { by: 'name' } : searchHit(card, q, card.from || '');
       if (!hit) continue;
       const also = hit.by === 'cameo' ? hit.names.join(', ') : null;
       if (base) {
@@ -2384,6 +2417,7 @@ window.addEventListener('storage', (e) => {
   }
 });
 
+if (migrateJumbos()) saveCollection();
 applyTile();
 markCurrency();
 renderSyncChip();

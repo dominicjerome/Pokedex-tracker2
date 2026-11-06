@@ -15,6 +15,7 @@ own and they light up in full colour; everything else stays dimmed.
 - Normal / holo / reverse holo / 1st Edition / Shadowless; holo rares are labelled "Normal (Holo)".
 - Special reverses: Poké Ball, Master Ball, Energy Symbol, Dusk / Love / Friend / Quick Ball, Team Rocket, Cosmos,
   Cracked Ice. Japanese master sets include Mirror and pattern reverses.
+- Jumbo (oversized) cards are kept out of the master sets, in their own **Jumbo Cards** set.
 - Stamped and exclusive printings: Play! Pokémon Prize Pack (every variation), League / Championship / Staff,
   Prerelease, Pokémon Center, Professor Program, deck and blister exclusives, calendars, Trick or Trade, Battle Academy.
   Each has its own photo and price. Toggle them with **Stamped: Show / Hide**.
