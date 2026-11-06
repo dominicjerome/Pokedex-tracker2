@@ -20,6 +20,10 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
   16-pocket (4×4), with two-page spreads on wide screens.
 - **Prices in £ (default), $ or €** – pounds use Cardmarket prices at today's exchange rate, dollars use TCGplayer.
   Set pages and the portfolio load live prices when opened (cached for 12 hours).
+- **Graded cards** – add PSA / CGC / BGS / SGC / TAG / ACE copies with grade, your own value and cert number
+  (open a card's **i** details). The portfolio splits raw and graded value and lists your slabs; the Card Explorer
+  has a *Graded* filter. There is no free source of graded prices, so values are entered by you (each card links
+  to eBay sold listings for that grade); a slab without a value counts at the raw price.
 - **Sync across devices** – in Settings, connect a GitHub token (gist permission only) and your collection
   is saved to a private gist and kept in step on every device. Each person uses their own account (or their
   own collection name on a shared account), so collections stay separate.

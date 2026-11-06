@@ -77,20 +77,37 @@ function clearCollection() {
 }
 
 const keyOf = (cardId, vk) => `${cardId}|${vk}`;
-const qtyOf = (cardId, vk) => collection[keyOf(cardId, vk)]?.q || 0;
+// An entry is { q: raw copies, g: [graded copies], t: added, m: modified }.
+// Graded copy ("slab"): { id, co: grader, gr: grade, v: value|null, cur: currency of v, cert }
+const entryOf = (cardId, vk) => collection[keyOf(cardId, vk)];
+const rawOf = (cardId, vk) => entryOf(cardId, vk)?.q || 0;
+const gradedOf = (cardId, vk) => entryOf(cardId, vk)?.g || [];
+/** all copies, raw + graded (anything > 0 counts as owned) */
+const qtyOf = (cardId, vk) => rawOf(cardId, vk) + gradedOf(cardId, vk).length;
 const setIdOfCard = (cardId) => cardId.slice(0, cardId.lastIndexOf('-'));
 
-function setQty(cardId, vk, q) {
-  const k = keyOf(cardId, vk);
+function putEntry(k, q, g) {
   const now = Date.now();
-  if (q > 0) {
-    collection[k] = { q, t: collection[k]?.t || now, m: now };
+  if (q > 0 || g.length) {
+    collection[k] = { q: Math.max(0, q), t: collection[k]?.t || now, m: now };
+    if (g.length) collection[k].g = g;
     delete tombs[k];
   } else if (collection[k]) {
     delete collection[k];
     tombs[k] = now;
   }
   saveCollection();
+}
+/** set the number of raw (ungraded) copies; graded copies are kept */
+function setQty(cardId, vk, q) {
+  putEntry(keyOf(cardId, vk), q, gradedOf(cardId, vk));
+}
+function addGraded(cardId, vk, slab) {
+  const g = [...gradedOf(cardId, vk), { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ...slab }];
+  putEntry(keyOf(cardId, vk), rawOf(cardId, vk), g);
+}
+function removeGraded(cardId, vk, id) {
+  putEntry(keyOf(cardId, vk), rawOf(cardId, vk), gradedOf(cardId, vk).filter((x) => x.id !== id));
 }
 
 // --------------------------------------------------------------------------
@@ -177,8 +194,9 @@ const Sync = (() => {
       const local = collection[k];
       const lm = local ? stamp(local) : tombs[k] || -1;
       if (stamp(r) > lm) {
-        if (!local || local.q !== r.q) localChanged = true;
-        collection[k] = { q: r.q, t: r.t || stamp(r), m: stamp(r) };
+        if (!local || local.q !== r.q || JSON.stringify(local.g) !== JSON.stringify(r.g)) localChanged = true;
+        collection[k] = { q: r.q || 0, t: r.t || stamp(r), m: stamp(r) };
+        if (r.g?.length) collection[k].g = r.g;
         delete tombs[k];
       }
     }
@@ -195,7 +213,8 @@ const Sync = (() => {
     // does the remote copy miss anything we have?
     let remoteStale = !remote;
     if (!remoteStale) {
-      for (const [k, e] of Object.entries(collection)) if (!R[k] || stamp(R[k]) !== stamp(e) || R[k].q !== e.q) { remoteStale = true; break; }
+      for (const [k, e] of Object.entries(collection))
+        if (!R[k] || stamp(R[k]) !== stamp(e) || R[k].q !== e.q || JSON.stringify(R[k].g) !== JSON.stringify(e.g)) { remoteStale = true; break; }
       if (!remoteStale) for (const k of Object.keys(R)) if (!collection[k]) { remoteStale = true; break; }
       if (!remoteStale) for (const [k, m] of Object.entries(tombs)) if (RD[k] !== m) { remoteStale = true; break; }
     }
@@ -532,6 +551,24 @@ const setValue = (s) => (prefs.currency === 'USD' ? s.valueUSD : prefs.currency 
 const priceSource = () =>
   prefs.currency === 'USD' ? 'TCGplayer market prices' : prefs.currency === 'GBP' ? 'Cardmarket prices in pounds' : 'Cardmarket trend prices';
 const priceNum = (v) => priceOf(v).v ?? 0;
+/** convert an amount entered in `cur` into the selected currency */
+function toCur(amount, cur) {
+  const eur = cur === 'EUR' ? amount : cur === 'GBP' ? amount / FX.GBP : amount / FX.USD;
+  return prefs.currency === 'EUR' ? eur : eur * FX[prefs.currency];
+}
+/** value of one graded copy; without an entered value it counts at the raw price */
+const slabValue = (slab, v) => (slab.v != null ? toCur(slab.v, slab.cur) : priceNum(v));
+/** value of every copy you hold of a printing, split raw / graded */
+function heldValue(cardId, v) {
+  const raw = priceNum(v) * rawOf(cardId, v.k);
+  const graded = gradedOf(cardId, v.k).reduce((a, sl) => a + slabValue(sl, v), 0);
+  return { raw, graded, total: raw + graded };
+}
+const GRADERS = ['PSA', 'CGC', 'BGS', 'SGC', 'TAG', 'ACE', 'Other'];
+const GRADES = ['10', '9.5', '9', '8.5', '8', '7.5', '7', '6.5', '6', '5.5', '5', '4.5', '4', '3.5', '3', '2.5', '2', '1.5', '1', 'Authentic'];
+const slabLabel = (sl) => `${sl.co} ${sl.gr}`;
+/** best grade first */
+const sortSlabs = (g) => [...g].sort((a, b) => (parseFloat(b.gr) || 0) - (parseFloat(a.gr) || 0));
 
 function money(n, { compact = false } = {}) {
   if (n == null) return '—';
@@ -640,7 +677,7 @@ function loading(msg = 'Loading…') {
 }
 
 /** One card tile. `entry` = { card, v, set } */
-function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
+function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = null } = {}) {
   const q = qtyOf(card.id, v.k);
   const owned = anyOwned ?? q > 0;
   const k = keyOf(card.id, v.k);
@@ -649,11 +686,18 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null } = {}) {
     <div class="fw"><button class="face" data-act="toggle" aria-pressed="${owned}" title="${owned ? 'Owned – click to remove' : 'Click to mark as owned'}">
       ${imgUrl(card) ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder">${esc(card.name)}</div>`}
       <span class="check" aria-hidden="true">✓</span>
-      ${q > 1 ? `<span class="qty">×${q}</span>` : ''}
+      ${q > 1 && !slab ? `<span class="qty">×${q}</span>` : ''}
+      ${(() => {
+        if (slab) return `<span class="slabchip">${esc(slabLabel(slab))}</span>`;
+        const g = gradedOf(card.id, v.k);
+        return g.length ? `<span class="slabchip" title="${esc(sortSlabs(g).map(slabLabel).join(', '))}">${esc(slabLabel(sortSlabs(g)[0]))}${g.length > 1 ? ` +${g.length - 1}` : ''}</span>` : '';
+      })()}
     </button>
     <button class="info-btn" data-act="info" aria-label="Details for ${esc(card.name)}">i</button></div>
     <div class="cap"><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) ? '/' + set.official : ''}</span></div>
-    <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${priceHtml(v)}</div>
+    <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${
+      slab ? (slab.v != null ? `<span class="value">${money(slabValue(slab, v))}</span>` : '<span class="approx" title="No value entered – counted at the raw price">raw price</span>') : priceHtml(v)
+    }</div>
     ${showSet ? `<div class="setname">${esc(set.name)}</div>` : ''}
   </div>`;
 }
@@ -819,6 +863,7 @@ app.addEventListener('click', (e) => {
       else setQty(card.id, v.k, 1);
     } else {
       setQty(card.id, v.k, qtyOf(card.id, v.k) ? 0 : 1);
+      if (gradedOf(card.id, v.k).length) toast('Graded copies kept – remove them in the card details (i)');
     }
     refreshTile(tile, entry);
     afterToggle();
@@ -925,15 +970,28 @@ function openCard(card, set) {
         <div class="variant-list">
           ${card.v
             .map((v) => {
-              const q = qtyOf(card.id, v.k);
-              return `<div class="variant-row${q ? ' owned' : ''}">
+              const raw = rawOf(card.id, v.k);
+              const slabs = sortSlabs(gradedOf(card.id, v.k));
+              return `<div class="variant-row${raw || slabs.length ? ' owned' : ''}">
                 <div><div class="badges">${badgesHtml(v, card) || '<span class="badge">Normal</span>'}</div></div>
                 ${priceHtml(v)}
-                <div class="stepper" data-vk="${esc(v.k)}"><button data-d="-1" aria-label="Remove one">−</button><span>${q}</span><button data-d="1" aria-label="Add one">+</button></div>
+                <div class="stepper" data-vk="${esc(v.k)}" title="Raw (ungraded) copies"><button data-d="-1" aria-label="Remove one raw copy">−</button><span>${raw}</span><button data-d="1" aria-label="Add one raw copy">+</button></div>
+                <div class="slabs">
+                  ${slabs
+                    .map(
+                      (sl) => `<div class="slab"><span class="slabchip">${esc(slabLabel(sl))}</span>
+                        <span class="${sl.v != null ? 'value' : 'approx'}">${sl.v != null ? money(slabValue(sl, v)) : `no value set · counted at raw price`}</span>
+                        ${sl.cert ? `<span class="muted">Cert ${esc(sl.cert)}</span>` : '<span></span>'}
+                        <button class="slab-x" data-rmslab="${esc(sl.id)}" data-vk="${esc(v.k)}" aria-label="Remove ${esc(slabLabel(sl))}">✕</button></div>`,
+                    )
+                    .join('')}
+                  ${addingSlab === v.k ? slabFormHtml(card, set, v) : `<button class="btn sm" data-addslab="${esc(v.k)}">+ Add graded copy</button>`}
+                </div>
               </div>`;
             })
             .join('')}
         </div>
+        <p class="muted small-note">The − / + buttons count raw (ungraded) copies. Graded copies are added separately with their own value.</p>
         <div class="ext-links">
           <a class="btn sm" target="_blank" rel="noopener" href="https://www.tcgplayer.com/search/pokemon/product?q=${encodeURIComponent(card.name + ' ' + set.name)}">TCGplayer ↗</a>
           <a class="btn sm" target="_blank" rel="noopener" href="https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${encodeURIComponent(card.name)}">Cardmarket ↗</a>
@@ -942,21 +1000,79 @@ function openCard(card, set) {
       </div>
     </div>`;
   };
+  addingSlab = null;
   render();
   modal.onclick = (e) => {
     if (e.target === modal || e.target.closest('.close') || e.target.closest('[data-close]')) return modal.close();
     const b = e.target.closest('.stepper button');
     if (b) {
       const vk = b.parentElement.dataset.vk;
-      setQty(card.id, vk, Math.max(0, qtyOf(card.id, vk) + Number(b.dataset.d)));
+      setQty(card.id, vk, Math.max(0, rawOf(card.id, vk) + Number(b.dataset.d)));
       render();
       changedWhileModal = true;
+      return;
     }
+    const add = e.target.closest('[data-addslab]');
+    if (add) {
+      addingSlab = add.dataset.addslab;
+      render();
+      modal.querySelector('.slabform select')?.focus();
+      return;
+    }
+    if (e.target.closest('[data-cancelslab]')) {
+      addingSlab = null;
+      return render();
+    }
+    const rm = e.target.closest('[data-rmslab]');
+    if (rm) {
+      removeGraded(card.id, rm.dataset.vk, rm.dataset.rmslab);
+      changedWhileModal = true;
+      return render();
+    }
+  };
+  modal.onchange = (e) => {
+    // keep the eBay link in step with the chosen grader and grade
+    const f = e.target.closest('.slabform');
+    if (f) f.querySelector('.ebay-grade').href = ebayGradedUrl(card, set, f.elements.co.value, f.elements.gr.value);
+  };
+  modal.onsubmit = (e) => {
+    const f = e.target.closest('.slabform');
+    if (!f) return;
+    e.preventDefault();
+    const val = f.elements.v.value.trim();
+    addGraded(card.id, f.dataset.vk, {
+      co: f.elements.co.value,
+      gr: f.elements.gr.value,
+      v: val === '' ? null : Math.max(0, Number(val)),
+      cur: prefs.currency,
+      cert: f.elements.cert.value.trim() || undefined,
+    });
+    addingSlab = null;
+    changedWhileModal = true;
+    render();
+    toast('Graded copy added');
   };
   changedWhileModal = false;
   modal.showModal();
 }
 let changedWhileModal = false;
+let addingSlab = null; // variant key whose "add graded copy" form is open
+const curSymbol = () => ({ GBP: '£', USD: '$', EUR: '€' })[prefs.currency];
+const ebayGradedUrl = (card, set, co, gr) =>
+  `https://www.ebay.co.uk/sch/i.html?_nkw=${encodeURIComponent(`${co} ${gr} ${card.name} ${set.name} ${card.n}`)}&LH_Sold=1&LH_Complete=1`;
+function slabFormHtml(card, set, v) {
+  return `<form class="slabform" data-vk="${esc(v.k)}">
+    <label>Grader<select name="co">${GRADERS.map((g) => `<option>${g}</option>`).join('')}</select></label>
+    <label>Grade<select name="gr">${GRADES.map((g) => `<option>${g}</option>`).join('')}</select></label>
+    <label>Value (${curSymbol()})<input name="v" type="number" min="0" step="0.01" inputmode="decimal" placeholder="optional"></label>
+    <label>Cert no.<input name="cert" type="text" maxlength="20" placeholder="optional" autocomplete="off"></label>
+    <div class="slabform-actions">
+      <button class="btn sm primary" type="submit">Save graded copy</button>
+      <button class="btn sm" type="button" data-cancelslab>Cancel</button>
+      <a class="ebay-grade" href="${ebayGradedUrl(card, set, 'PSA', '10')}" target="_blank" rel="noopener">Check eBay sold prices for this grade ↗</a>
+    </div>
+  </form>`;
+}
 modal.addEventListener('close', () => {
   if (changedWhileModal) route(true);
   else Sync.flushRedraw();
@@ -996,8 +1112,9 @@ async function pagePortfolio() {
     if (b) b.style.width = `${(d / t) * 100}%`;
   });
 
-  let total = 0, copies = 0, slots = 0, priced = 0;
+  let total = 0, copies = 0, slots = 0, priced = 0, rawTotal = 0, gradedTotal = 0;
   const entries = [];
+  const slabEntries = [];
   const perSet = [];
   const perSeries = new Map();
   for (const s of sets) {
@@ -1008,12 +1125,18 @@ async function pagePortfolio() {
         const q = qtyOf(card.id, v.k);
         if (!q) continue;
         any = true;
-        const p = priceNum(v);
+        const hv = heldValue(card.id, v);
+        const slabs = gradedOf(card.id, v.k);
+        // a card's headline value: its best single copy (raw price or best graded value)
+        const p = Math.max(rawOf(card.id, v.k) ? priceNum(v) : 0, ...slabs.map((sl) => slabValue(sl, v)));
         sOwned++;
         copies += q;
-        sValue += p * q;
+        sValue += hv.total;
+        rawTotal += hv.raw;
+        gradedTotal += hv.graded;
         if (p) priced++;
         entries.push({ card, v, set: s, p, t: collection[keyOf(card.id, v.k)].t });
+        for (const sl of slabs) slabEntries.push({ card, v, set: s, sl, p: slabValue(sl, v) });
       }
       if (any) sCards++;
     }
@@ -1049,7 +1172,23 @@ async function pagePortfolio() {
         <div class="stat"><b>${num(complete)}</b><span>master sets complete</span></div>
         <div class="stat"><b>${money(slots ? total / copies : 0)}</b><span>average card value</span></div>
       </div>
+      <div class="stats split">
+        <div class="stat"><b class="value">${money(rawTotal)}</b><span>Raw cards · ${num(copies - slabEntries.length)} ${copies - slabEntries.length === 1 ? 'copy' : 'copies'}</span></div>
+        <div class="stat"><b class="value">${money(gradedTotal)}</b><span>Graded cards · ${num(slabEntries.length)} slab${slabEntries.length === 1 ? '' : 's'}</span></div>
+      </div>
     </section>
+    ${
+      slabEntries.length
+        ? `<h2 class="section">Graded cards <small>${num(slabEntries.length)} slabs · ${money(gradedTotal)}</small></h2>
+      <div class="card-grid">${[...slabEntries]
+        .sort((a, b) => b.p - a.p)
+        .map((e) => {
+          gridLookup.set(keyOf(e.card.id, e.v.k), { ...e, tileOpts: { showSet: true } });
+          return tileHtml(e, { showSet: true, slab: e.sl });
+        })
+        .join('')}</div>`
+        : ''
+    }
 
     <h2 class="section">Most valuable cards <small>your top 12</small></h2>
     <div class="card-grid">${top.map(reg).join('')}</div>
@@ -1231,7 +1370,7 @@ async function pageSet(id) {
         if (q) {
           o++;
           any = true;
-          vOwned += p * q;
+          vOwned += heldValue(c.id, v).total;
         }
       }
       if (any) cards++;
@@ -1340,7 +1479,7 @@ async function pageCards() {
   app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every set (${num(all.length)} in total), sorted across sets.</p>
     <div class="toolbar">
       <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card, e.g. Charizard…" autocomplete="off"></div>
-      <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
+      <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="graded">Graded</button><button data-v="missing">Missing</button></div>
       <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
       <select id="sort" aria-label="Sort">
         <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option>
@@ -1366,6 +1505,7 @@ async function pageCards() {
       if (q && !e.card.name.toLowerCase().includes(q) && !e.set.name.toLowerCase().includes(q)) return false;
       if (prefs.exFilter === 'owned' && !qtyOf(e.card.id, e.v.k)) return false;
       if (prefs.exFilter === 'missing' && qtyOf(e.card.id, e.v.k)) return false;
+      if (prefs.exFilter === 'graded' && !gradedOf(e.card.id, e.v.k).length) return false;
       return true;
     });
     const s = prefs.exSort;
@@ -1389,7 +1529,10 @@ async function pageCards() {
           return tileHtml(e, { showSet: true });
         })
         .join('') || '<div class="empty" style="grid-column:1/-1"><h3>No cards match</h3></div>';
-    const owned = prefs.exFilter === 'owned' ? list.reduce((a, e) => a + priceNum(e.v) * qtyOf(e.card.id, e.v.k), 0) : null;
+    const owned =
+      prefs.exFilter === 'owned' ? list.reduce((a, e) => a + heldValue(e.card.id, e.v).total, 0)
+      : prefs.exFilter === 'graded' ? list.reduce((a, e) => a + heldValue(e.card.id, e.v).graded, 0)
+      : null;
     $('#count').innerHTML = `${num(list.length)} printings${owned != null ? ` · <span class="value">${money(owned)}</span>` : ''}`;
     $('#more').style.display = list.length > limit ? '' : 'none';
   };
@@ -1458,9 +1601,12 @@ async function pageSettings() {
       if (replace) clearCollection();
       let added = 0;
       for (const [k, v] of Object.entries(incoming)) {
-        const q = typeof v === 'number' ? v : Number(v?.q);
-        if (!k.includes('|') || !(q > 0)) continue;
+        const q = typeof v === 'number' ? v : Number(v?.q) || 0;
+        const g = Array.isArray(v?.g) ? v.g : [];
+        if (!k.includes('|') || !(q > 0 || g.length)) continue;
         collection[k] = { q: Math.max(q, collection[k]?.q || 0), t: v?.t || Date.now(), m: Date.now() };
+        const slabs = [...(collection[k].g || []), ...g.filter((sl) => !(collection[k].g || []).some((x) => x.id === sl.id))];
+        if (slabs.length) collection[k].g = slabs;
         delete tombs[k];
         added++;
       }

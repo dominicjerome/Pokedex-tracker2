@@ -372,3 +372,24 @@ code { font-size: 0.85em; background: var(--surface-3); padding: 1px 6px; border
 .binder.single .spread.in-next > * { transform-origin: left center; animation: turnInPrev 0.26s ease-out; }
 .binder.single .spread.out-prev > * { transform-origin: right center; animation: turnOutPrev 0.23s ease-in forwards; }
 .binder.single .spread.in-prev > * { transform-origin: right center; animation: turnInNext 0.26s ease-out; }
+
+/* ---------- graded copies ---------- */
+.slabchip { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.02em; white-space: nowrap;
+  color: #1a0f2e; background: linear-gradient(135deg, #fde68a, var(--gold)); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4) inset; }
+.tile .face .slabchip { position: absolute; left: 8px; bottom: 8px; z-index: 2; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
+body.selecting .tile .face .slabchip { bottom: 8px; }
+.variant-row { grid-template-columns: 1fr auto auto; }
+.slabs { grid-column: 1 / -1; display: grid; gap: 6px; }
+.slabs:empty { display: none; }
+.slabs > .btn { justify-self: start; }
+.slab { display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); font-size: 0.86rem; }
+.slab-x { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); cursor: pointer; }
+.slab-x:hover { border-color: var(--red); color: var(--red); }
+.slabform { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; padding: 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--accent-3); }
+.slabform label { display: grid; gap: 4px; font-size: 0.78rem; color: var(--muted); }
+.slabform select, .slabform input { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); min-width: 0; }
+.slabform-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.ebay-grade { font-size: 0.82rem; }
+.small-note { font-size: 0.8rem; margin: 10px 0 0; }
+.stats.split { margin-top: 14px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+@media (max-width: 520px) { .slab { grid-template-columns: auto 1fr auto; } .slab > :nth-child(3) { display: none; } }
