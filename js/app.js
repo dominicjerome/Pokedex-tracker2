@@ -768,6 +768,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
       ${imgUrl(card, 'low', v) ? `<img class="card-img" src="${esc(imgUrl(card, 'low', v))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder"><b>${esc(card.name)}</b>${card.en ? `<span>${esc(card.en)}</span>` : ''}<span>#${esc(card.n)}</span><small>No image yet</small></div>`}
       <span class="check" aria-hidden="true">✓</span>
       ${q > 1 && !slab ? `<span class="qty">×${q}</span>` : ''}
+      ${!v?.im && card.imlang ? '<span class="imglang" title="Picture of the Japanese print – this card has no picture of its own yet">JP image</span>' : ''}
       ${(() => {
         if (slab) return `<span class="slabchip">${esc(slabLabel(slab))}</span>`;
         const g = gradedOf(card.id, v.k);
@@ -1065,7 +1066,7 @@ function openCard(card, set) {
       <div>${imgUrl(card) ? `<img class="big card-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : `<div class="big" style="display:grid;place-items:center">${esc(card.name)}</div>`}</div>
       <div>
         <div class="muted">${esc(set.name)} · #${esc(card.n)}${set.official ? ' / ' + set.official : ''}</div>
-        <h2>${esc(card.name)}</h2>${card.en ? `<div class="muted">${esc(card.en)}</div>` : ''}
+        <h2>${esc(card.name)}</h2>${card.en ? `<div class="muted">${esc(card.en)}</div>` : ''}${card.imlang ? '<p class="muted small-note">The picture shows the Japanese print of this card – no picture of this language version is available yet.</p>' : ''}
         <dl class="facts">
           ${set.lang && set.lang !== 'en' ? `<dt>Language</dt><dd>${esc(langInfo(set.lang).name)}</dd>` : ''}
           ${card.r ? `<dt>Rarity</dt><dd>${esc(card.r)}</dd>` : ''}

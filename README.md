@@ -37,6 +37,9 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
 - **Search finds Pokémon in the artwork** – searching "Snivy" also finds Fates Collide Jigglypuff 65/124, where
   Snivy appears in the background (marked ✦ in art). Data: [RotomAmiti's Cameo Pokémon Card Database](https://docs.google.com/spreadsheets/d/18nIkOgqQrHZTz0TrH_gL1e1nL1RcHiCmPF5finAjToY),
   rebuilt by `python3 scripts/build_cameos.py`.
+- **Missing pictures filled in** – cards TCGdex has no picture for use pokemontcg.io scans or TCGplayer photos (checked to
+  load), and Chinese/Thai/Indonesian cards without a picture show the Japanese print, marked "JP image"
+  (`scripts/fill-images.mjs`).
 - **Other languages** – Japanese, Chinese (Traditional), Thai and Indonesian catalogues (Sets page tabs, Card Explorer
   and binder pickers have a language choice). Card names are as printed with the English Pokémon name underneath, so
   searching "Charizard" finds リザードンex. Prices are Cardmarket's. Not every non-English card has an image yet.

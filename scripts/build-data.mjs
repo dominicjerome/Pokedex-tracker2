@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fillGaps } from './fill-gaps.mjs';
 import { addStamps } from './add-stamps.mjs';
+import { fillImages } from './fill-images.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LANG = (process.argv.find((a) => a.startsWith('--lang=')) || '--lang=en').slice(7);
@@ -291,6 +292,12 @@ async function main() {
     if (LANG === 'en') await fillGaps();
   } catch (e) {
     console.error('Filling gaps from pokemontcg.io failed:', e.message);
+  }
+  // pictures TCGdex doesn't have (pokemontcg.io / TCGplayer / the Japanese print)
+  try {
+    await fillImages(LANG);
+  } catch (e) {
+    console.error('Filling images failed:', e.message);
   }
   // stamped / exclusive printings of set cards from TCGplayer's catalogue
   if (LANG === 'en') {

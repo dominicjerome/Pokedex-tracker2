@@ -445,3 +445,5 @@ body.selecting .tile .face .slabchip { bottom: 8px; }
 .slabform-hint { grid-column: 1 / -1; font-size: 0.8rem; }
 .slabform-hint:empty { display: none; }
 .slabform select:disabled { opacity: 0.4; }
+
+.imglang { position: absolute; left: 8px; bottom: 8px; z-index: 2; padding: 1px 7px; border-radius: 6px; font-size: 0.66rem; font-weight: 800; color: #fff; background: rgba(13, 7, 23, 0.85); border: 1px solid rgba(248, 113, 113, 0.5); }
