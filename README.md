@@ -18,7 +18,11 @@ own and they light up in full colour; everything else stays dimmed.
 - Jumbo (oversized) cards are kept out of the master sets, in their own **Jumbo Cards** set.
 - Stamped and exclusive printings: Play! Pokémon Prize Pack (every variation), League / Championship / Staff,
   Prerelease, Pokémon Center, Professor Program, deck and blister exclusives, calendars, Trick or Trade, Battle Academy.
-  Each has its own photo and price. Toggle them with **Stamped: Show / Hide**.
+  Each has its own photo and price.
+- Switch between a **Standard master set** (each card plus its regular printings, matching checklists, e.g. 151 = 360,
+  Prismatic Evolutions = 447, Evolving Skies = 369) and a **True master set** (adds stamps, Prize Pack, and tin, blister
+  and box versions such as Cosmos and Galaxy holos and metal cards). Set pages, the Sets page, Card Explorer and
+  portfolio all follow the switch.
 
 **Tracking and value**
 - Portfolio page: total value (raw and graded shown separately), most valuable cards, set progress, value by era.

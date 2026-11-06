@@ -177,6 +177,8 @@ function applyOps(c, list) {
       const plainNormals = c.v.filter((x) => x.t === 'normal' && isPlainV(x) && !(x.s || []).length && (!x.sub || x.sub === 'unlimited'));
       const plainHolo = c.v.some((x) => x.t === 'holo' && isPlainV(x) && !(x.s || []).length);
       if (!plainHolo && plainNormals.length === 1) plainNormals[0].t = 'holo';
+      // TCGplayer only sells it as holo, yet a plain non-holo is listed too: a duplicate listing – keep it out of the standard master set
+      else if (plainHolo) for (const n of plainNormals) n.dup = 1;
       const h = c.v.find((x) => x.t === 'holo' && isPlainV(x) && !(x.s || []).length);
       if (h && h.u == null && o.u != null) h.u = o.u;
     } else if (o.op === 'photo') {

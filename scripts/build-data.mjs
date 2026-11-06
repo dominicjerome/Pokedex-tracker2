@@ -300,15 +300,29 @@ async function finalizeIndex() {
   const index = JSON.parse(await readFile(indexPath, 'utf8'));
   await extractJumbos(index);
   const stamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
+  // tin / blister / box versions (Cosmos, Galaxy, Cracked Ice… holos and metal cards) – part of the
+  // "true" master set but not the standard one. Only from 2003 on: older data uses these flags for regular prints.
+  const EXTRA_FOILS = new Set(['cosmos', 'galaxy', 'cracked-ice', 'cracked_ice', 'wave', 'tinsel', 'league']);
+  const extra = (v, date) => v.dup || ((date || '') >= '2003' && !stamped(v) && (EXTRA_FOILS.has(v.f) || v.t === 'metal'));
   for (const meta of index.sets) {
     const file = path.join(OUT, 'sets', `${PREFIX ? meta.id.slice(PREFIX.length) : meta.id}.json`);
     if (!existsSync(file)) continue;
     const set = JSON.parse(await readFile(file, 'utf8'));
     const vs = set.cards.flatMap((c) => c.v);
+    for (const v of vs) {
+      if (extra(v, set.releaseDate)) v.x = 1;
+      else delete v.x;
+    }
+    // gold Hyper Rares are sometimes listed twice (plain holo + gold holo) – the plain one is the duplicate
+    for (const c of set.cards) {
+      const plain = (v) => !stamped(v) && !v.z && !(v.s || []).length;
+      if (!c.v.some((v) => v.f === 'gold' && v.t === 'holo' && plain(v))) continue;
+      for (const v of c.v) if (v.t === 'holo' && !v.f && plain(v)) v.x = 1;
+    }
     const sum = (key) => Math.round(vs.reduce((a, v) => a + (v[key] ?? (key === 'u' ? (v.e ?? 0) * EUR_TO_USD : (v.u ?? 0) / EUR_TO_USD)), 0) * 100) / 100;
     Object.assign(set, { total: set.cards.length, variants: vs.length, valueUSD: sum('u'), valueEUR: sum('e') });
     await writeFile(file, JSON.stringify(set));
-    Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
+    Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, standard: vs.filter((v) => !stamped(v) && !v.x).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
   }
   await writeFile(indexPath, JSON.stringify(index));
 }

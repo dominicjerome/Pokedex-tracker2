@@ -42,6 +42,9 @@ if (!prefs.cv) {
   prefs.currency = 'GBP';
   prefs.cv = 1;
 }
+// "standard" = the cards + their regular printings (what checklists count); "true" = everything
+if (!prefs.master) prefs.master = prefs.stamps === 'hide' ? 'standard' : 'true';
+delete prefs.stamps;
 const savePrefs = () => save(LS_PREFS, prefs);
 FX = Object.assign(FX, load(LS_FX, {}));
 
@@ -593,7 +596,7 @@ async function getSets(ids, onProgress) {
 function ownedBySet() {
   const m = new Map();
   for (const k of Object.keys(collection)) {
-    if (prefs.stamps === 'hide' && isStampedKey(k)) continue;
+    if (prefs.master === 'standard' && !isStandardKey(k)) continue;
     const sid = setIdOfCard(k.split('|')[0]);
     m.set(sid, (m.get(sid) || 0) + 1);
   }
@@ -745,6 +748,15 @@ const isFoil = (v) => v.t !== 'normal' || !!v.f;
 /** stamped / exclusive printing. 1st Edition doesn't count (it's part of every classic master set), nor does
  *  the set logo on EX-era reverse holos (that *is* their reverse holo). */
 const isStamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
+const EXTRA_FOIL_KEY = /^[a-z]+(~[^:#@]+)?:(cosmos|galaxy|cracked-ice|cracked_ice|wave|tinsel|league)(#|@|$)/;
+/** standard-master-set test from a collection key (close enough for the Sets page counts) */
+const isStandardKey = (key) => {
+  if (isStampedKey(key)) return false;
+  const vk = key.split('|')[1] || '';
+  if (vk.startsWith('metal')) return false;
+  if (EXTRA_FOIL_KEY.test(vk)) return (ALLMETA.get(setIdOfCard(key.split('|')[0]))?.releaseDate || '') < '2003';
+  return true;
+};
 /** the same test from a collection key ("cardId|holo#staff") */
 const isStampedKey = (key) => {
   const vk = key.split('|')[1] || '';
@@ -752,7 +764,13 @@ const isStampedKey = (key) => {
   return stamps.some((x) => x !== '1st-edition') && !(vk.startsWith('reverse') && stamps.join() === 'set-logo');
 };
 /** printings shown with the current "Stamped: show / hide" setting */
-const visibleV = (card) => (prefs.stamps === 'hide' ? card.v.filter((v) => !isStamped(v)) : card.v);
+/** part of the standard master set? (not stamped, not a tin/blister/box extra or duplicate listing – flagged x by the build) */
+const isStandard = (v) => !isStamped(v) && !v.x;
+/** printings shown in the current mode */
+const visibleV = (card) => (prefs.master === 'standard' ? card.v.filter(isStandard) : card.v);
+const masterLabel = () => (prefs.master === 'standard' ? 'standard master set' : 'true master set');
+const MASTER_SEG = `<div class="seg mset" title="Standard: every card plus its regular printings (normal, holo, reverse, 1st Edition, set patterns) – what checklists count. True: also stamped, Prize Pack, and tin / blister / box versions.">
+  <button data-v="standard">Standard master set</button><button data-v="true">True master set</button></div>`;
 
 // --------------------------------------------------------------------------
 // UI helpers
@@ -1464,7 +1482,7 @@ async function pagePortfolio() {
 }
 
 /** master-set size from the set index, following the stamped toggle */
-const setSlots = (s) => (prefs.stamps === 'hide' ? s.regular ?? s.variants : s.variants);
+const setSlots = (s) => (prefs.master === 'standard' ? s.standard ?? s.regular ?? s.variants : s.variants);
 function setCardHtml(s, ownedCount) {
   const p = pct(ownedCount, setSlots(s));
   const cls = p >= 100 ? 'complete' : ownedCount ? 'started' : '';
@@ -1499,6 +1517,7 @@ async function pageSets() {
       <div class="seg" id="sfilter">
         <button data-v="all">All</button><button data-v="started">Started</button><button data-v="promo">Promos</button>
       </div>
+      ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="smset"')}
       <select id="ssort" aria-label="Sort sets">
         <option value="newest">Newest first</option><option value="oldest">Oldest first</option>
         <option value="progress">Most complete</option><option value="value">Most valuable set</option>
@@ -1508,6 +1527,15 @@ async function pageSets() {
   let filter = 'all';
   const sortSel = $('#ssort');
   sortSel.value = prefs.setsSort;
+  const ms = $('#smset');
+  ms.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === prefs.master));
+  ms.onclick = (e) => {
+    const x = e.target.closest('button');
+    if (!x) return;
+    prefs.master = x.dataset.v;
+    savePrefs();
+    pageSets();
+  };
   app.querySelector('.langtabs').onclick = (e) => {
     const t = e.target.closest('[data-lang]');
     if (!t) return;
@@ -1598,7 +1626,7 @@ async function pageSet(id) {
         <button data-v="master">Master set</button><button data-v="base">Base set</button>
       </div>
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
-      <div class="seg" id="stamps" title="Stamped and exclusive printings: League, Prize Pack, Prerelease, Staff, Pokémon Center…"><button data-v="show">Stamped: Show</button><button data-v="hide">Hide</button></div>
+      ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="mset"')}
       <select id="sort" aria-label="Sort cards">
         <option value="number">Set order</option><option value="value-desc">Value: high → low</option>
         <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
@@ -1639,7 +1667,7 @@ async function pageSet(id) {
     const officialOwned = set.cards.filter((c, i) => i < set.official && c.v.some((v) => qtyOf(c.id, v.k))).length;
     $('#ring').innerHTML = ring(prefs.mode === 'master' ? mp : bp);
     $('#setstats').innerHTML = `
-      <div class="stat"><b>${num(o)} / ${num(slots)}</b><span>Master set printings${prefs.stamps === 'hide' ? ' (no stamped)' : ''}</span>${bar(mp, mp >= 100)}</div>
+      <div class="stat"><b>${num(o)} / ${num(slots)}</b><span>Printings in the ${masterLabel()}</span>${bar(mp, mp >= 100)}</div>
       <div class="stat"><b>${num(cards)} / ${num(set.total)}</b><span>Unique cards (incl. secret rares)</span>${bar(bp, bp >= 100)}</div>
       <div class="stat"><b>${num(officialOwned)} / ${num(set.official)}</b><span>Official set (${set.official} numbered)</span>${bar(pct(officialOwned, set.official), officialOwned >= set.official)}</div>
       <div class="stat"><b class="value">${money(vOwned)}</b><span>Your value · master set ≈ ${money(vTotal, { compact: true })}</span></div>`;
@@ -1696,8 +1724,7 @@ async function pageSet(id) {
   };
   bindSeg('mode', 'mode');
   bindSeg('filter', 'filter');
-  prefs.stamps ||= 'show';
-  bindSeg('stamps', 'stamps');
+  bindSeg('mset', 'master');
   const sortSel = $('#sort');
   sortSel.value = prefs.sort;
   sortSel.onchange = () => {
@@ -1749,7 +1776,7 @@ async function pageCards() {
       <select id="exlang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === exLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
       <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card or a Pokémon in the art, e.g. Snivy…" autocomplete="off"></div>
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="graded">Graded</button><button data-v="missing">Missing</button></div>
-      <div class="seg" id="exstamps" title="Stamped and exclusive printings"><button data-v="show">Stamped: Show</button><button data-v="hide">Hide</button></div>
+      ${MASTER_SEG.replace('class="seg mset"', 'class="seg mset" id="exstamps"')}
       <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
       <select id="sort" aria-label="Sort">
         <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option>
@@ -1772,7 +1799,7 @@ async function pageCards() {
     const q = $('#q').value.trim().toLowerCase();
     list = all.filter((e) => {
       if (prefs.exSeries !== 'all' && e.set.series !== prefs.exSeries) return false;
-      if (prefs.stamps === 'hide' && isStamped(e.v)) return false;
+      if (prefs.master === 'standard' && !isStandard(e.v)) return false;
       if (q) {
         const hit = searchHit(e.card, q, e.set.name);
         if (!hit) return false;
@@ -1825,13 +1852,12 @@ async function pageCards() {
   let t;
   $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
   $('#more').onclick = () => ((limit += PAGE), render(), syncSelection());
-  prefs.stamps ||= 'show';
   const stSeg = $('#exstamps');
-  const markSt = () => stSeg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === prefs.stamps));
+  const markSt = () => stSeg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === prefs.master));
   stSeg.onclick = (e) => {
     const x = e.target.closest('button');
     if (!x) return;
-    prefs.stamps = x.dataset.v;
+    prefs.master = x.dataset.v;
     savePrefs();
     markSt();
     compute();
