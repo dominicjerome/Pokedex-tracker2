@@ -30,6 +30,10 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
 - **Search finds Pokémon in the artwork** – searching "Snivy" also finds Fates Collide Jigglypuff 65/124, where
   Snivy appears in the background (marked ✦ in art). Data: [RotomAmiti's Cameo Pokémon Card Database](https://docs.google.com/spreadsheets/d/18nIkOgqQrHZTz0TrH_gL1e1nL1RcHiCmPF5finAjToY),
   rebuilt by `python3 scripts/build_cameos.py`.
+- **Other languages** – Japanese, Chinese (Traditional), Thai and Indonesian catalogues (Sets page tabs, Card Explorer
+  and binder pickers have a language choice). Card names are as printed with the English Pokémon name underneath, so
+  searching "Charizard" finds リザードンex. Prices are Cardmarket's. Not every non-English card has an image yet.
+  Build one with `node scripts/build-data.mjs --lang=ja`.
 - **Sync across devices** – in Settings, connect a GitHub token (gist permission only) and your collection
   is saved to a private gist and kept in step on every device. Each person uses their own account (or their
   own collection name on a shared account), so collections stay separate.

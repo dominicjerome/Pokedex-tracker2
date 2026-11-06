@@ -17,6 +17,8 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/build-data.mjs
+      - name: Build Japanese, Chinese, Thai and Indonesian catalogues
+        run: for l in ja zh-tw th id; do node scripts/build-data.mjs --lang=$l || echo "$l failed - keeping previous data"; done
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

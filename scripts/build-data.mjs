@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Builds the static card database used by the site from the free TCGdex API
-// (https://tcgdex.dev). Run with:  node scripts/build-data.mjs [setId ...]
+// (https://tcgdex.dev). Run with:  node scripts/build-data.mjs [--lang=ja] [setId ...]
+//   Languages: en (default), ja, zh-tw, th, id. Non-English catalogues go to data/<lang>/ and their
+//   set/card ids are prefixed with "<lang>/" so they never clash with English ids.
 //
 // Output:
 //   data/sets.json        – index of every set (grouped by series/era)
@@ -14,8 +16,28 @@ import { fileURLToPath } from 'node:url';
 import { fillGaps } from './fill-gaps.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = path.join(ROOT, 'data');
-const API = 'https://api.tcgdex.net/v2/en';
+const LANG = (process.argv.find((a) => a.startsWith('--lang=')) || '--lang=en').slice(7);
+const OUT = LANG === 'en' ? path.join(ROOT, 'data') : path.join(ROOT, 'data', LANG);
+const API = `https://api.tcgdex.net/v2/${LANG}`;
+const PREFIX = LANG === 'en' ? '' : `${LANG}/`;
+// English names for TCGdex's non-English series ids
+const SERIES_EN = {
+  PMCG: 'Original era', neo: 'Neo', VS: 'VS', web: 'Web', e: 'e-Card', E: 'e-Card', ADV: 'ADV (EX era)', PCG: 'PCG (EX era)',
+  DP: 'Diamond & Pearl', DPt: 'Platinum', L: 'LEGEND (HGSS)', BW: 'Black & White', XY: 'XY', XYb: 'XY BREAK',
+  SM: 'Sun & Moon', S: 'Sword & Shield', SV: 'Scarlet & Violet', M: 'Mega Evolution', CS: 'Chinese exclusive',
+};
+let SPECIES = {}; // Pokédex number -> English name, so non-English cards can be searched in English
+async function loadSpecies() {
+  try {
+    const r = await (await fetch('https://pokeapi.co/api/v2/pokemon-species?limit=2000')).json();
+    r.results.forEach((x, i) => {
+      SPECIES[i + 1] = x.name.split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')
+        .replace(/^Nidoran F$/, 'Nidoran♀').replace(/^Nidoran M$/, 'Nidoran♂').replace(/^Mr Mime$/, 'Mr. Mime').replace(/^Mime Jr$/, 'Mime Jr.').replace(/^Mr Rime$/, 'Mr. Rime');
+    });
+  } catch (e) {
+    console.warn('Could not load English Pokémon names:', e.message);
+  }
+}
 const CONCURRENCY = Number(process.env.CONCURRENCY || 12);
 // Pokémon TCG Pocket is a digital game – not physical cards, so skip it.
 const SKIP_SERIES = new Set(['tcgp']);
@@ -173,7 +195,11 @@ async function buildSet(brief, seriesOrder) {
   const briefs = set.cards || [];
   const cards = await pool(briefs, CONCURRENCY, async (b) => {
     const c = (await get(`${API}/cards/${encodeURIComponent(b.id)}`)) || b;
-    const o = { id: c.id, n: c.localId ?? b.localId, name: c.name ?? b.name };
+    const o = { id: PREFIX + (c.id || b.id), n: c.localId ?? b.localId, name: c.name ?? b.name };
+    if (PREFIX && Array.isArray(c.dexId) && c.dexId.length) {
+      const en = c.dexId.map((d) => SPECIES[d]).filter(Boolean);
+      if (en.length) o.en = en.join(' & ');
+    }
     if (c.image || b.image) o.img = c.image || b.image;
     if (c.rarity) o.r = c.rarity;
     if (c.category) o.cat = c.category;
@@ -192,10 +218,11 @@ async function buildSet(brief, seriesOrder) {
       ) * 100,
     ) / 100;
   const data = {
-    id: set.id,
+    id: PREFIX + set.id,
     name: set.name,
-    series: serie.id,
-    seriesName: serie.name,
+    lang: LANG,
+    series: PREFIX + serie.id,
+    seriesName: PREFIX ? SERIES_EN[serie.id] || serie.name : serie.name,
     releaseDate: set.releaseDate || null,
     logo: set.logo || null,
     symbol: set.symbol || null,
@@ -208,17 +235,19 @@ async function buildSet(brief, seriesOrder) {
     updated: new Date().toISOString(),
     cards,
   };
+  if (!cards.length) return null; // some non-English sets are listed without their cards
   await writeFile(path.join(OUT, 'sets', `${set.id}.json`), JSON.stringify(data));
   const { cards: _c, ...index } = data;
-  index.seriesOrder = seriesOrder[serie.id] ?? 99;
+  index.seriesOrder = seriesOrder[PREFIX + serie.id] ?? 99;
   return index;
 }
 
 async function main() {
   await mkdir(path.join(OUT, 'sets'), { recursive: true });
-  const only = process.argv.slice(2);
+  const only = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+  if (PREFIX) await loadSpecies();
   const [sets, series] = await Promise.all([get(`${API}/sets`), get(`${API}/series`)]);
-  const seriesOrder = Object.fromEntries(series.map((s, i) => [s.id, i]));
+  const seriesOrder = Object.fromEntries(series.map((s, i) => [PREFIX + s.id, i]));
   const todo = only.length ? sets.filter((s) => only.includes(s.id)) : sets;
 
   // Keep previously built sets when doing a partial rebuild.
@@ -235,7 +264,7 @@ async function main() {
         byId.set(idx.id, idx);
         console.log(`[${done}/${todo.length}] ${idx.id} ${idx.name}: ${idx.total} cards, ${idx.variants} master-set slots`);
       } else {
-        byId.delete(brief.id);
+        byId.delete(PREFIX + brief.id);
         console.log(`[${done}/${todo.length}] ${brief.id} skipped`);
       }
     } catch (e) {
@@ -244,18 +273,18 @@ async function main() {
     }
   }
 
-  const order = new Map(sets.map((s, i) => [s.id, i]));
+  const order = new Map(sets.map((s, i) => [PREFIX + s.id, i]));
   const all = [...byId.values()].sort(
     (a, b) => (a.releaseDate || '9999').localeCompare(b.releaseDate || '9999') || (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0),
   );
   await writeFile(
     indexPath,
-    JSON.stringify({ updated: new Date().toISOString(), source: 'TCGdex (tcgdex.dev)', sets: all }, null, 0),
+    JSON.stringify({ updated: new Date().toISOString(), lang: LANG, source: 'TCGdex (tcgdex.dev)', sets: all }, null, 0),
   );
   console.log(`Wrote ${all.length} sets`);
   // add cards TCGdex is missing from pokemontcg.io (failure here keeps the TCGdex data)
   try {
-    await fillGaps();
+    if (LANG === 'en') await fillGaps();
   } catch (e) {
     console.error('Filling gaps from pokemontcg.io failed:', e.message);
   }

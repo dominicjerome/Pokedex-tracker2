@@ -423,3 +423,16 @@ body.selecting .tile .face .slabchip { bottom: 8px; }
 .picker .tile.inbinder::after { content: '✓ In binder'; position: absolute; top: 8px; left: 8px; z-index: 3; padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; color: #052e16; background: var(--green); pointer-events: none; }
 .picker .tile .check { display: none; }
 [data-binder-only][hidden] { display: none; }
+
+/* ---------- languages ---------- */
+.langtabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 8px; }
+.langtabs button { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); cursor: pointer; font-weight: 500; }
+.langtabs button:hover { color: var(--text); border-color: var(--accent-3); }
+.langtabs button.on { color: #fff; background: linear-gradient(135deg, var(--accent-3), var(--accent)); border-color: transparent; }
+.langchip { display: inline-block; padding: 0 6px; border-radius: 5px; font-size: 0.66rem; font-weight: 800; letter-spacing: 0.04em; color: #fecaca; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(248, 113, 113, 0.35); vertical-align: 1px; }
+.set-header .meta .langchip { font-size: 0.78rem; padding: 1px 8px; }
+.enname { font-size: 0.74rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -3px; }
+.tile .placeholder { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; }
+.tile .placeholder b { color: var(--text); font-size: 0.95rem; }
+.tile .placeholder span { font-size: 0.8rem; }
+.tile .placeholder small { font-size: 0.7rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 6px; }

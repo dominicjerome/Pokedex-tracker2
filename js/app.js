@@ -342,18 +342,45 @@ const Sync = (() => {
 let INDEX = null; // { sets: [...] }
 const setCache = new Map();
 
-async function getIndex() {
-  if (INDEX) return INDEX;
-  const res = await fetch('data/sets.json', { cache: 'no-cache' });
-  if (!res.ok) throw new Error('Could not load set list');
-  INDEX = await res.json();
-  INDEX.byId = new Map(INDEX.sets.map((s) => [s.id, s]));
-  return INDEX;
+// Card catalogues. English lives in data/, the others in data/<lang>/ with "<lang>/" id prefixes.
+const LANGS = [
+  { id: 'en', name: 'English', short: 'EN' },
+  { id: 'ja', name: '日本語 Japanese', short: 'JP' },
+  { id: 'zh-tw', name: '繁體中文 Chinese', short: 'ZH' },
+  { id: 'th', name: 'ไทย Thai', short: 'TH' },
+  { id: 'id', name: 'Indonesian', short: 'ID' },
+];
+const langInfo = (id) => LANGS.find((l) => l.id === id) || LANGS[0];
+const langOf = (setOrCardId) => (setOrCardId.includes('/') ? setOrCardId.split('/')[0] : 'en');
+const rawId = (id) => (id.includes('/') ? id.slice(id.indexOf('/') + 1) : id);
+const INDEXES = {};
+const ALLMETA = new Map(); // set id -> index entry, across every loaded language
+
+async function getIndex(lang = 'en') {
+  if (INDEXES[lang]) return INDEXES[lang];
+  const res = await fetch(lang === 'en' ? 'data/sets.json' : `data/${lang}/sets.json`, { cache: 'no-cache' });
+  if (!res.ok) {
+    if (lang === 'en') throw new Error('Could not load set list');
+    INDEXES[lang] = { sets: [], byId: new Map(), missing: true };
+    return INDEXES[lang];
+  }
+  const idx = await res.json();
+  idx.byId = new Map(idx.sets.map((s) => [s.id, s]));
+  idx.sets.forEach((s) => ALLMETA.set(s.id, s));
+  INDEXES[lang] = idx;
+  if (lang === 'en') INDEX = idx;
+  return idx;
+}
+/** load the indexes for every language that appears in the given set ids */
+async function getIndexesFor(ids) {
+  await Promise.all([...new Set(['en', ...ids.map(langOf)])].map((l) => getIndex(l)));
+  return ALLMETA;
 }
 
 function getSet(id) {
   if (!setCache.has(id)) {
-    const p = fetch(`data/sets/${encodeURIComponent(id)}.json`)
+    const lang = langOf(id);
+    const p = fetch(lang === 'en' ? `data/sets/${encodeURIComponent(id)}.json` : `data/${lang}/sets/${encodeURIComponent(rawId(id))}.json`)
       .then((r) => {
         if (!r.ok) throw new Error(`Set ${id} not found`);
         return r.json();
@@ -375,7 +402,6 @@ function getSet(id) {
 // Live prices – fetched from TCGdex in the browser, cached for LIVE_TTL.
 // The pricing rules mirror scripts/build-data.mjs so keys and prices match.
 // --------------------------------------------------------------------------
-const LIVE_API = 'https://api.tcgdex.net/v2/en/cards/';
 const LS_LIVE = 'pokevault.live.v1';
 const LIVE_TTL = 12 * 60 * 60 * 1000;
 /** live: { cardId: { t: fetchedAt, p: { variantKey: [usd|null, eur|null] } } } */
@@ -466,7 +492,7 @@ async function refreshLive(cards, onProgress) {
       while (i < todo.length && failures < 8) {
         const card = todo[i++];
         try {
-          const res = await fetch(LIVE_API + encodeURIComponent(card.id));
+          const res = await fetch(`https://api.tcgdex.net/v2/${langOf(card.id)}/cards/${encodeURIComponent(rawId(card.id))}`);
           if (!res.ok) throw new Error(res.status);
           live[card.id] = { t: Date.now(), p: pricesFromApi(await res.json()) };
           if (applyLive(card)) updated++;
@@ -609,6 +635,7 @@ const STAMP_NAMES = {
   'player-rewards-program': 'Play! Rewards', 'professor-program': 'Professor', 'pokemon-together': 'Pokémon Together',
   gamestop: 'GameStop', 'eb-games': 'EB Games', 'top-thirty-two': 'Top 32', 'top-sixteen': 'Top 16', 'top-eight': 'Top 8',
   'semi-finalist': 'Semi-Finalist', finalist: 'Finalist', winner: 'Winner', prerelease: 'Prerelease',
+  'no-rarity': 'No Rarity Symbol',
 };
 const FOIL_NAMES = { cosmos: 'Cosmos Holo', pokeball: 'Poké Ball', masterball: 'Master Ball', galaxy: 'Galaxy Holo', gold: 'Gold', league: 'League', cracked_ice: 'Cracked Ice', 'cracked-ice': 'Cracked Ice' };
 const titleCase = (s) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bPokemon\b/g, 'Pokémon');
@@ -697,7 +724,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
   return `<div class="tile${owned ? ' owned' : ''}${isFoil(v) ? ' foil' : ''}${selected.has(k) ? ' sel' : ''}" data-key="${esc(k)}">
     <span class="selmark" aria-hidden="true"></span>
     <div class="fw"><button class="face" data-act="toggle" aria-pressed="${owned}" title="${owned ? 'Owned – click to remove' : 'Click to mark as owned'}">
-      ${imgUrl(card) ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder">${esc(card.name)}</div>`}
+      ${imgUrl(card) ? `<img class="card-img" src="${esc(imgUrl(card))}" alt="${esc(card.name)}" loading="lazy" decoding="async">` : `<div class="placeholder"><b>${esc(card.name)}</b>${card.en ? `<span>${esc(card.en)}</span>` : ''}<span>#${esc(card.n)}</span><small>No image yet</small></div>`}
       <span class="check" aria-hidden="true">✓</span>
       ${q > 1 && !slab ? `<span class="qty">×${q}</span>` : ''}
       ${(() => {
@@ -707,11 +734,12 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
       })()}
     </button>
     <button class="info-btn" data-act="info" aria-label="Details for ${esc(card.name)}">i</button></div>
-    <div class="cap"><span class="nm" title="${esc(card.name)}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) ? '/' + set.official : ''}</span></div>
+    <div class="cap"><span class="nm" title="${esc(card.name)}${card.en ? ` (${esc(card.en)})` : ''}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) ? '/' + set.official : ''}</span></div>
     <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${
       slab ? (slab.v != null ? `<span class="value">${money(slabValue(slab, v))}</span>` : '<span class="approx" title="No value entered – counted at the raw price">raw price</span>') : priceHtml(v)
     }</div>
-    ${showSet ? `<div class="setname">${esc(set.name)}</div>` : ''}
+    ${card.en ? `<div class="enname">${esc(card.en)}</div>` : ''}
+    ${showSet ? `<div class="setname">${set.lang && set.lang !== 'en' ? `<span class="langchip">${langInfo(set.lang).short}</span> ` : ''}${esc(set.name)}</div>` : ''}
     ${also ? `<div class="also" title="Appears in the artwork"><span class="also-chip">✦ in art</span> ${esc(also)}</div>` : ''}
   </div>`;
 }
@@ -992,8 +1020,9 @@ function openCard(card, set) {
       <div>${imgUrl(card) ? `<img class="big card-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : `<div class="big" style="display:grid;place-items:center">${esc(card.name)}</div>`}</div>
       <div>
         <div class="muted">${esc(set.name)} · #${esc(card.n)}${set.official ? ' / ' + set.official : ''}</div>
-        <h2>${esc(card.name)}</h2>
+        <h2>${esc(card.name)}</h2>${card.en ? `<div class="muted">${esc(card.en)}</div>` : ''}
         <dl class="facts">
+          ${set.lang && set.lang !== 'en' ? `<dt>Language</dt><dd>${esc(langInfo(set.lang).name)}</dd>` : ''}
           ${card.r ? `<dt>Rarity</dt><dd>${esc(card.r)}</dd>` : ''}
           ${card.cat ? `<dt>Category</dt><dd>${esc(card.cat)}${card.ty ? ' · ' + card.ty.map(esc).join(', ') : ''}</dd>` : ''}
           ${card.ill ? `<dt>Illustrator</dt><dd>${esc(card.ill)}</dd>` : ''}
@@ -1148,7 +1177,8 @@ modal.addEventListener('close', () => {
 async function pagePortfolio() {
   const idx = await getIndex();
   const owned = ownedBySet();
-  const ownedSetIds = [...owned.keys()].filter((id) => idx.byId.has(id));
+  const meta = await getIndexesFor([...owned.keys()]);
+  const ownedSetIds = [...owned.keys()].filter((id) => meta.has(id));
 
   if (!ownedSetIds.length) {
     const featured = [...idx.sets].sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || '')).slice(0, 6);
@@ -1207,10 +1237,11 @@ async function pagePortfolio() {
     slots += sOwned;
     total += sValue;
     perSet.push({ s, sOwned, sValue, sCards });
-    const ser = perSeries.get(s.seriesName) || { v: 0, n: 0, order: idx.byId.get(s.id)?.seriesOrder ?? 99 };
+    const era = s.seriesName + (s.lang && s.lang !== 'en' ? ` (${langInfo(s.lang).short})` : '');
+    const ser = perSeries.get(era) || { v: 0, n: 0, order: meta.get(s.id)?.seriesOrder ?? 99 };
     ser.v += sValue;
     ser.n += sOwned;
-    perSeries.set(s.seriesName, ser);
+    perSeries.set(era, ser);
   }
   const complete = perSet.filter((x) => x.sOwned >= x.s.variants).length;
   const top = [...entries].sort((a, b) => b.p - a.p).slice(0, 12);
@@ -1297,18 +1328,28 @@ function setCardHtml(s, ownedCount) {
   return `<a class="set-card ${cls}" href="#/set/${encodeURIComponent(s.id)}">
     <div class="logo">${setLogo(s)}</div>
     <div class="title">${s.symbol ? `<img src="${esc(s.symbol)}.webp" alt="" loading="lazy" data-fallback="">` : ''}<span>${esc(s.name)}</span></div>
-    <div class="sub"><span>${fmtDate(s.releaseDate)}${s.code ? ' · ' + esc(s.code) : ''}</span><span>${num(s.total)} cards</span></div>
+    <div class="sub"><span>${fmtDate(s.releaseDate)}${s.code || s.lang ? ' · ' + esc(s.code || rawId(s.id)) : ''}</span><span>${num(s.total)} cards</span></div>
     ${bar(p, p >= 100)}
     <div class="sub"><span>${num(ownedCount)}/${num(s.variants)} printings</span><span>${value ? `<span class="value">${money(value, { compact: true })}</span> set` : ''}</span></div>
   </a>`;
 }
 
 async function pageSets() {
-  const idx = await getIndex();
+  const lang = prefs.lang || 'en';
+  const idx = await getIndex(lang);
   const owned = ownedBySet();
   app.innerHTML = `
     <h1>All sets</h1>
-    <p class="muted">${num(idx.sets.length)} sets, grouped by era – including Black Star promos, trainer kits, McDonald's and special collections.</p>
+    <div class="langtabs" role="tablist" aria-label="Card language">
+      ${LANGS.map((l) => `<button role="tab" data-lang="${l.id}" aria-selected="${l.id === lang}" class="${l.id === lang ? 'on' : ''}">${esc(l.name)}</button>`).join('')}
+    </div>
+    <p class="muted">${
+      lang === 'en'
+        ? `${num(idx.sets.length)} sets, grouped by era – including Black Star promos, trainer kits, McDonald's and special collections.`
+        : idx.missing
+          ? 'This catalogue is still being built – check back after the next data update.'
+          : `${num(idx.sets.length)} ${esc(langInfo(lang).name)} sets. Names are shown as printed, with the English Pokémon name underneath. Not every card has a picture yet – they appear as the card database adds them.`
+    }</p>
     <div class="toolbar">
       <div class="grow"><input class="search" id="q" type="search" placeholder="Search sets…" autocomplete="off"></div>
       <div class="seg" id="sfilter">
@@ -1323,9 +1364,16 @@ async function pageSets() {
   let filter = 'all';
   const sortSel = $('#ssort');
   sortSel.value = prefs.setsSort;
+  app.querySelector('.langtabs').onclick = (e) => {
+    const t = e.target.closest('[data-lang]');
+    if (!t) return;
+    prefs.lang = t.dataset.lang;
+    savePrefs();
+    pageSets();
+  };
   const draw = () => {
     const q = $('#q').value.trim().toLowerCase();
-    let list = idx.sets.filter((s) => !q || s.name.toLowerCase().includes(q) || s.seriesName.toLowerCase().includes(q) || (s.code || '').toLowerCase() === q);
+    let list = idx.sets.filter((s) => !q || s.name.toLowerCase().includes(q) || s.seriesName.toLowerCase().includes(q) || (s.code || rawId(s.id)).toLowerCase() === q);
     if (filter === 'started') list = list.filter((s) => owned.get(s.id));
     if (filter === 'promo') list = list.filter((s) => /promo/i.test(s.name));
     const sort = prefs.setsSort;
@@ -1375,7 +1423,8 @@ async function pageSets() {
 }
 
 async function pageSet(id) {
-  const idx = await getIndex();
+  const idx = await getIndex(langOf(id));
+  if (langOf(id) !== (prefs.lang || 'en')) ((prefs.lang = langOf(id)), savePrefs()); // "All sets" opens on this language
   loading('Loading set…');
   let set;
   try {
@@ -1394,7 +1443,7 @@ async function pageSet(id) {
         <div>${set.logo ? `<img class="logo" src="${esc(set.logo)}.webp" alt="${esc(set.name)}" data-fallback="${esc(set.name)}">` : ''}</div>
         <div>
           <h1>${esc(set.name)}</h1>
-          <div class="meta"><span>${esc(set.seriesName)}</span><span>Released ${fmtDate(set.releaseDate)}</span>${set.code ? `<span>Code ${esc(set.code)}</span>` : ''}<span>${set.official} official + ${Math.max(0, set.total - set.official)} secret</span></div>
+          <div class="meta"><span>${esc(set.seriesName)}</span><span>Released ${fmtDate(set.releaseDate)}</span>${set.code || set.lang ? `<span>Code ${esc(set.code || rawId(set.id))}</span>` : ''}${set.lang && set.lang !== 'en' ? `<span class="langchip">${esc(langInfo(set.lang).name)}</span>` : ''}<span>${set.official} official + ${Math.max(0, set.total - set.official)} secret</span></div>
           <div class="live" id="live"></div>
         </div>
         <div id="ring"></div>
@@ -1533,7 +1582,9 @@ async function pageSet(id) {
 }
 
 async function pageCards() {
-  const idx = await getIndex();
+  await getIndex();
+  const exLang = prefs.exLang || 'en';
+  const idx = await getIndex(exLang);
   app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every set, ranked by value.</p>
     <div class="load-progress" id="lp">Loading ${num(idx.sets.length)} sets…${bar(0)}</div>`;
   const sets = await getSets(idx.sets.map((s) => s.id), (d, t) => {
@@ -1546,8 +1597,9 @@ async function pageCards() {
   for (const s of sets) for (const card of s.cards) for (const v of card.v) all.push({ card, v, set: s });
   const seriesList = [...new Map(idx.sets.map((s) => [s.series, s.seriesName])).entries()];
 
-  app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every set (${num(all.length)} in total), sorted across sets.</p>
+  app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every ${exLang === 'en' ? '' : esc(langInfo(exLang).name) + ' '}set (${num(all.length)} in total), sorted across sets.</p>
     <div class="toolbar">
+      <select id="exlang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === exLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
       <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card or a Pokémon in the art, e.g. Snivy…" autocomplete="off"></div>
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="graded">Graded</button><button data-v="missing">Missing</button></div>
       <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
@@ -1624,6 +1676,12 @@ async function pageCards() {
   let t;
   $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
   $('#more').onclick = () => ((limit += PAGE), render(), syncSelection());
+  $('#exlang').onchange = (e) => {
+    prefs.exLang = e.target.value;
+    prefs.exSeries = 'all';
+    savePrefs();
+    pageCards();
+  };
   afterToggle = () => {};
   bindSelectButton();
   redrawPage = render;
@@ -1649,7 +1707,7 @@ const cameosOf = (card) => (CAMEOS && CAMEOS[card.id]) || [];
 /** does the card match the search? 'name' | 'cameo' | null (cameo hits return the matching names) */
 function searchHit(card, q, extra = '') {
   if (!q) return { by: 'name' };
-  if (card.name.toLowerCase().includes(q) || (extra && extra.toLowerCase().includes(q))) return { by: 'name' };
+  if (card.name.toLowerCase().includes(q) || (card.en && card.en.toLowerCase().includes(q)) || (extra && extra.toLowerCase().includes(q))) return { by: 'name' };
   const hits = cameosOf(card).filter((n) => n.toLowerCase().includes(q));
   return hits.length ? { by: 'cameo', names: hits } : null;
 }
@@ -1671,6 +1729,7 @@ function touchBinder(b) {
 /** resolve binder keys ("cardId|variant") to { card, v, set } entries, in binder order */
 async function binderEntries(b, onProgress) {
   const setIds = [...new Set(b.cards.map((k) => setIdOfCard(k.split('|')[0])))];
+  await getIndexesFor(setIds);
   const sets = await getSets(setIds, onProgress);
   const byCard = new Map();
   for (const s of sets) for (const c of s.cards) byCard.set(c.id, { c, s });
@@ -1850,7 +1909,9 @@ async function pageBinder(id, sub) {
 
 /** search every card (names and cameos) and tap to add/remove from the binder */
 async function binderPicker(b) {
-  const idx = await getIndex();
+  await getIndex();
+  const pickLang = b.pickLang || 'en';
+  const idx = await getIndex(pickLang);
   app.innerHTML = `<a class="back" href="#/binder/${encodeURIComponent(b.id)}">← Back to ${esc(b.name)}</a>
     <h1>Add cards to ${esc(b.name)}</h1>
     <div class="load-progress" id="lp">Loading every set…${bar(0)}</div>`;
@@ -1871,6 +1932,7 @@ async function binderPicker(b) {
         <button data-v="card">One per card</button><button data-v="all">Every printing</button>
       </div>
       <div class="seg" id="pcam"><button data-v="yes">Include cameos</button><button data-v="no">Name only</button></div>
+      <select id="plang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === pickLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
       <span class="count" id="count"></span>
       <button class="btn sm" id="addall">＋ Add all results</button>
       <a class="btn sm primary" href="#/binder/${encodeURIComponent(b.id)}">Done</a>
@@ -1958,6 +2020,12 @@ async function binderPicker(b) {
   let t;
   $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
   $('#more').onclick = () => ((limit += 120), render());
+  $('#plang').onchange = (e) => {
+    b.pickLang = e.target.value;
+    b.lastSearch = $('#q').value.trim();
+    save(LS_BINDERS, binders);
+    binderPicker(b);
+  };
   afterToggle = () => {};
   compute();
   $('#q').focus();
