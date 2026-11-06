@@ -669,7 +669,9 @@ const imgUrl = (c, q = 'low', v = null) =>
 
 const STAMP_NAMES = {
   '1st-edition': '1st Edition', 'pokemon-center': 'Pokémon Center', 'set-logo': 'Set Logo', staff: 'Staff', 'w-promo': 'W Promo',
-  'player-rewards-program': 'Play! Rewards', 'professor-program': 'Professor', 'pokemon-together': 'Pokémon Together',
+  'player-rewards-program': 'Play! Pokémon', 'prize-pack-series-1': 'Series 1', 'prize-pack-series-2': 'Series 2',
+  'prize-pack-series-3': 'Series 3', 'prize-pack-series-4': 'Series 4', 'prize-pack-series-5': 'Series 5', 'prize-pack-series-6': 'Series 6',
+  'prize-pack-series-7': 'Series 7', 'prize-pack-series-8': 'Series 8', 'left-stamp': 'Left Stamp', 'right-stamp': 'Right Stamp', 'professor-program': 'Professor', 'pokemon-together': 'Pokémon Together',
   gamestop: 'GameStop', 'eb-games': 'EB Games', 'top-thirty-two': 'Top 32', 'top-sixteen': 'Top 16', 'top-eight': 'Top 8',
   'semi-finalist': 'Semi-Finalist', finalist: 'Finalist', winner: 'Winner', prerelease: 'Prerelease',
   'no-rarity': 'No Rarity Symbol',
@@ -688,19 +690,25 @@ function variantBadges(v, card) {
   if (stamps.includes('1st-edition')) out.push({ text: '1st Edition', cls: 'ed' });
   if (v.sub && v.sub !== 'unlimited') out.push({ text: titleCase(v.sub), cls: 'ed' });
   else if (v.sub === 'unlimited') out.push({ text: 'Unlimited', cls: '' });
+  const plain = !stamps.length && !v.f && !v.z && (!v.sub || v.sub === 'unlimited');
   if (v.t === 'reverse') out.push({ text: 'Reverse Holo', cls: 'rev' });
   else if (v.t === 'holo') {
-    if (!/holo|rare|ex|gx|v$|vmax|vstar|ultra|secret|illustration|hyper|amazing|radiant|ace/i.test(card?.r || '') || card?.v?.some((x) => x.t === 'normal' && !x.s && !x.f))
-      out.push({ text: 'Holo', cls: 'holo' });
+    // make it clear when the regular printing of a card is holo
+    if (plain) out.push({ text: 'Normal (Holo)', cls: 'holo' });
   } else if (v.t !== 'normal') out.push({ text: titleCase(v.t), cls: 'holo' });
   if (v.f) out.push({ text: FOIL_NAMES[v.f] || titleCase(v.f), cls: 'foilb' });
   for (const s of stamps) if (s !== '1st-edition') out.push({ text: STAMP_NAMES[s] || titleCase(s), cls: 'stamp' });
   if (v.z) out.push({ text: titleCase(v.z), cls: 'size' });
+  if (v.t === 'holo' && !plain && !v.f) out.push({ text: '(Holo)', cls: 'holo' });
   return out;
 }
 const variantName = (v, card) => variantBadges(v, card).map((b) => b.text).join(' · ') || (v.t === 'holo' ? 'Holo' : 'Normal');
 const badgesHtml = (v, card) => variantBadges(v, card).map((b) => `<span class="badge ${b.cls}">${esc(b.text)}</span>`).join('');
 const isFoil = (v) => v.t !== 'normal' || !!v.f;
+/** stamped / exclusive printing (1st Edition doesn't count – it's part of every classic master set) */
+const isStamped = (v) => v.src === 'tcgp' || (v.s || []).some((x) => x !== '1st-edition');
+/** printings shown with the current "Stamped: show / hide" setting */
+const visibleV = (card) => (prefs.stamps === 'hide' ? card.v.filter((v) => !isStamped(v)) : card.v);
 
 // --------------------------------------------------------------------------
 // UI helpers
@@ -1539,6 +1547,7 @@ async function pageSet(id) {
         <button data-v="master">Master set</button><button data-v="base">Base set</button>
       </div>
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
+      <div class="seg" id="stamps" title="Stamped and exclusive printings: League, Prize Pack, Prerelease, Staff, Pokémon Center…"><button data-v="show">Stamped: Show</button><button data-v="hide">Hide</button></div>
       <select id="sort" aria-label="Sort cards">
         <option value="number">Set order</option><option value="value-desc">Value: high → low</option>
         <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
@@ -1558,10 +1567,11 @@ async function pageSet(id) {
 
   let shown = [];
   const stats = () => {
-    let o = 0, cards = 0, vOwned = 0, vTotal = 0;
+    let o = 0, cards = 0, vOwned = 0, vTotal = 0, slots = 0;
     for (const c of set.cards) {
       let any = false;
-      for (const v of c.v) {
+      for (const v of visibleV(c)) {
+        slots++;
         const p = priceNum(v);
         vTotal += p;
         const q = qtyOf(c.id, v.k);
@@ -1573,12 +1583,12 @@ async function pageSet(id) {
       }
       if (any) cards++;
     }
-    const mp = pct(o, set.variants);
+    const mp = pct(o, slots);
     const bp = pct(cards, set.total);
     const officialOwned = set.cards.filter((c, i) => i < set.official && c.v.some((v) => qtyOf(c.id, v.k))).length;
     $('#ring').innerHTML = ring(prefs.mode === 'master' ? mp : bp);
     $('#setstats').innerHTML = `
-      <div class="stat"><b>${num(o)} / ${num(set.variants)}</b><span>Master set printings</span>${bar(mp, mp >= 100)}</div>
+      <div class="stat"><b>${num(o)} / ${num(slots)}</b><span>Master set printings${prefs.stamps === 'hide' ? ' (no stamped)' : ''}</span>${bar(mp, mp >= 100)}</div>
       <div class="stat"><b>${num(cards)} / ${num(set.total)}</b><span>Unique cards (incl. secret rares)</span>${bar(bp, bp >= 100)}</div>
       <div class="stat"><b>${num(officialOwned)} / ${num(set.official)}</b><span>Official set (${set.official} numbered)</span>${bar(pct(officialOwned, set.official), officialOwned >= set.official)}</div>
       <div class="stat"><b class="value">${money(vOwned)}</b><span>Your value · master set ≈ ${money(vTotal, { compact: true })}</span></div>`;
@@ -1596,7 +1606,7 @@ async function pageSet(id) {
       if (base) {
         const ownedV = card.v.find((v) => qtyOf(card.id, v.k));
         list.push({ card, v: ownedV || card.v[0], set, base: true, also, maxP: Math.max(0, ...card.v.map(priceNum)) });
-      } else for (const v of card.v) list.push({ card, v, set, also });
+      } else for (const v of visibleV(card)) list.push({ card, v, set, also });
     }
     const isOwned = (e) => (e.base ? e.card.v.some((v) => qtyOf(e.card.id, v.k)) : qtyOf(e.card.id, e.v.k) > 0);
     if (prefs.filter === 'owned') list = list.filter(isOwned);
@@ -1635,6 +1645,8 @@ async function pageSet(id) {
   };
   bindSeg('mode', 'mode');
   bindSeg('filter', 'filter');
+  prefs.stamps ||= 'show';
+  bindSeg('stamps', 'stamps');
   const sortSel = $('#sort');
   sortSel.value = prefs.sort;
   sortSel.onchange = () => {
@@ -1686,6 +1698,7 @@ async function pageCards() {
       <select id="exlang" aria-label="Card language">${LANGS.map((l) => `<option value="${l.id}"${l.id === exLang ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
       <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card or a Pokémon in the art, e.g. Snivy…" autocomplete="off"></div>
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="graded">Graded</button><button data-v="missing">Missing</button></div>
+      <div class="seg" id="exstamps" title="Stamped and exclusive printings"><button data-v="show">Stamped: Show</button><button data-v="hide">Hide</button></div>
       <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
       <select id="sort" aria-label="Sort">
         <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option>
@@ -1708,6 +1721,7 @@ async function pageCards() {
     const q = $('#q').value.trim().toLowerCase();
     list = all.filter((e) => {
       if (prefs.exSeries !== 'all' && e.set.series !== prefs.exSeries) return false;
+      if (prefs.stamps === 'hide' && isStamped(e.v)) return false;
       if (q) {
         const hit = searchHit(e.card, q, e.set.name);
         if (!hit) return false;
@@ -1760,6 +1774,18 @@ async function pageCards() {
   let t;
   $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
   $('#more').onclick = () => ((limit += PAGE), render(), syncSelection());
+  prefs.stamps ||= 'show';
+  const stSeg = $('#exstamps');
+  const markSt = () => stSeg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === prefs.stamps));
+  stSeg.onclick = (e) => {
+    const x = e.target.closest('button');
+    if (!x) return;
+    prefs.stamps = x.dataset.v;
+    savePrefs();
+    markSt();
+    compute();
+  };
+  markSt();
   $('#exlang').onchange = (e) => {
     prefs.exLang = e.target.value;
     prefs.exSeries = 'all';
@@ -2036,7 +2062,7 @@ async function binderPicker(b) {
           if (!hit || (hit.by === 'cameo' && cam === 'no')) continue;
           // one per card: the printing already in the binder, else the regular (unlimited, unstamped) one
           const plain = card.v.find((v) => !v.s && !v.f && !v.z && (!v.sub || v.sub === 'unlimited')) || card.v[0];
-          const vs = b.pickMode === 'all' ? card.v : [card.v.find((v) => b.cards.includes(keyOf(card.id, v.k))) || plain];
+          const vs = b.pickMode === 'all' ? visibleV(card) : [card.v.find((v) => b.cards.includes(keyOf(card.id, v.k))) || plain];
           for (const v of vs) results.push({ card, v, set: s, also: hit.by === 'cameo' ? hit.names.join(', ') : null });
         }
     }

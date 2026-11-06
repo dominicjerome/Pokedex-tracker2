@@ -22,7 +22,10 @@ const API = 'https://tcgcsv.com/tcgplayer/3';
 const EUR_TO_USD = 1.1;
 
 // TCGplayer groups that hold stamped / exclusive reprints, and the label used when a product has no tag
+// Play! Pokémon Prize Pack cards use TCGdex's name for the same stamp, so the two merge
+const PRIZE_PACK = 'player-rewards-program';
 const GROUPS = [
+  [/^Prize Pack Series Cards$/i, PRIZE_PACK],
   [/^Deck Exclusives$/i, 'Deck Exclusive'],
   [/^Blister Exclusives$/i, 'Blister Exclusive'],
   [/^League & Championship Cards$/i, 'League'],
@@ -68,6 +71,7 @@ const slug = (s) => String(s).toLowerCase().replace(/é/g, 'e').replace(/[^a-z0-
 const numOf = (n) => String(n).replace(/^0+(?=\d)/, '').toLowerCase();
 const ERA = /^(ex|dp|pl|hgss|hs|bw|xy|sm|swsh|sv|me|base|neo|e-card)\s+/i;
 
+const UNMATCHED = [];
 export async function addStamps({ log = console.log } = {}) {
   const indexPath = path.join(DATA, 'sets.json');
   const index = JSON.parse(await readFile(indexPath, 'utf8'));
@@ -110,19 +114,27 @@ export async function addStamps({ log = console.log } = {}) {
       }
       for (const p of products.results) {
         const number = (p.extendedData || []).find((e) => e.name === 'Number')?.value;
-        const m = number && String(number).match(/^0*(\d+[a-z]?)\s*\/\s*0*(\d+)$/i);
-        if (!m) continue; // promo-numbered cards are already in the promo sets
-        const [, n, total] = m;
+        const prize = label === PRIZE_PACK;
+        let m = number && String(number).match(/^0*(\d+[a-z]?)\s*\/\s*0*(\d+)$/i);
+        // Prize Pack also reprints promos ("SWSH149"); other promo-numbered cards are already in the promo sets
+        const promoNum = prize && !m && number && /^([A-Z]{2,5})?\d+$/i.test(number) ? number : null;
+        if (!m && !promoNum) continue;
+        const [, n, total] = m || [null, promoNum, null];
         const base = p.name.split(' - ')[0].replace(/\s*[([].*$/, '').trim();
         const tags = [...p.name.matchAll(/\(([^)]*)\)|\[([^\]]*)\]/g)].map((x) => (x[1] || x[2]).trim()).filter((t) => t && !/^\d+[a-z]?\/\d+$/i.test(t) && t !== number);
         // which set? a tag naming the set wins, else the printed total must match
         const hinted = tags.map((t) => setNames.get(norm(t)) || setNames.get(norm(t.replace(ERA, '')))).find(Boolean);
-        let cands = byNumName.get(`${numOf(n)}|${norm(base)}`) || [];
+        let cands = byNumName.get(`${numOf(n)}|${norm(base)}`) || byNumName.get(`${numOf(n)}|${norm(base.replace(/^basic\s+/i, ''))}`) || [];
+        // basic energies: "MEE" marks Mega Evolution energies, unmarked ones are Scarlet & Violet's
+        if (cands.some((x) => x.s.set.id === 'mee')) cands = cands.filter((x) => (x.s.set.id === 'mee') === /\bMEE\b/.test(p.name));
         if (!cands.length) cands = [...byNumName.entries()].filter(([k]) => k.startsWith(numOf(n) + '|') && (k.endsWith('|' + norm(base)) || k.split('|')[1].startsWith(norm(base)))).flatMap(([, v]) => v);
         if (hinted) cands = cands.filter((x) => x.s === hinted);
+        else if (promoNum) cands = cands.filter((x) => /promo|energy/i.test(x.s.set.name));
         else cands = cands.filter((x) => Number(total) === x.s.set.official || Number(total) === x.s.set.total);
         // promo sets list their own cards (and TCGdex already has their stamped versions)
-        cands = cands.filter((x) => !/promo/i.test(x.s.set.name));
+        if (!promoNum) cands = cands.filter((x) => !/promo/i.test(x.s.set.name));
+        else if (cands.length > 1) cands = cands.filter((x) => x.s.set.releaseDate >= '2019'); // Prize Packs began with Sword & Shield
+        if (cands.length !== 1 && prize) UNMATCHED.push(`${p.name} [${number}]`);
         if (cands.length !== 1) continue;
         const { c } = cands[0];
         // describe the printing
@@ -135,10 +147,11 @@ export async function addStamps({ log = console.log } = {}) {
           const ty = TYPE_TAGS.find(([re]) => re.test(t));
           if (ty) { type = ty[1]; continue; }
           if (/^\d+$/.test(t)) continue; // stray numbers
+          if (prize && /^(prize pack )?series \d+$/i.test(t)) { stamps.push(slug('prize-pack-' + t.replace(/^prize pack /i, ''))); continue; }
           stamps.push(slug(t));
         }
-        if (!stamps.length && !foil) stamps.push(slug(label));
-        if (!stamps.length) stamps.push(slug(label)); // a cosmos blister card is still a blister exclusive
+        if (prize) stamps.unshift(PRIZE_PACK); // every Prize Pack card carries the Play! Pokémon stamp
+        else if (!stamps.length) stamps.push(slug(label)); // e.g. a cosmos blister card is still a blister exclusive
         const subs = priceBy.get(p.productId) || [{ subTypeName: type === 'reverse' ? 'Reverse Holofoil' : type === 'normal' ? 'Normal' : 'Holofoil' }];
         for (const sp of subs) {
           const t = type || SUBTYPE[sp.subTypeName] || 'holo';
@@ -169,8 +182,14 @@ export async function addStamps({ log = console.log } = {}) {
       const extra = found[c.id];
       if (!extra) continue;
       for (const v of extra) {
-        // skip printings TCGdex already has (same type, foil and stamps)
-        if (c.v.some((x) => x.k === v.k || (x.t === v.t && (x.f || null) === (v.f || null) && (x.s || []).join() === v.s.join()))) continue;
+        // TCGdex already has this printing: keep it, but use TCGplayer's photo of the stamped card and its own price
+        const same = c.v.find((x) => x.k === v.k || (x.t === v.t && (x.f || null) === (v.f || null) && (x.s || []).join() === v.s.join()));
+        if (same) {
+          if (v.im) same.im = v.im;
+          if (v.u != null) same.u = v.u;
+          changed = true;
+          continue;
+        }
         if (c.v.some((x) => x.k === v.k)) continue;
         c.v.push(v);
         added++;
@@ -189,6 +208,7 @@ export async function addStamps({ log = console.log } = {}) {
   await writeFile(cachePath, JSON.stringify(found));
   await writeFile(indexPath, JSON.stringify(index));
   log(`Stamps: added ${added} stamped/exclusive printings`);
+  if (UNMATCHED.length) log(`Prize Pack cards with no matching card (${UNMATCHED.length}): ${UNMATCHED.slice(0, 40).join('; ')}`);
   return added;
 }
 

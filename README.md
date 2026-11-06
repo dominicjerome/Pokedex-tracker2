@@ -20,7 +20,7 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
   16-pocket (4×4), with two-page spreads on wide screens.
 - **Prices in £ (default), $ or €** – pounds use Cardmarket prices at today's exchange rate, dollars use TCGplayer.
   Set pages and the portfolio load live prices when opened (cached for 12 hours).
-- **Stamped & exclusive printings** – League / Championship / Staff stamps, Professor Program, Prerelease kits, deck and
+- **Stamped & exclusive printings** (toggle with *Stamped: Show / Hide*) – Play! Pokémon Prize Pack stamps (every variation: non-holo, holo, reverse, Cosmos, left/right stamp, series), League / Championship / Staff stamps, Professor Program, Prerelease kits, deck and
   blister exclusives (Cosmos, Cracked Ice), calendars, Trick or Trade and Battle Academy versions are part of each master set,
   with their own photo and TCGplayer price (from TCGplayer's catalogue via [tcgcsv.com](https://tcgcsv.com), `scripts/add-stamps.mjs`).
 - **Graded and other-language copies** – in a card's **i** details add copies with a language (German, Japanese…) and/or a
