@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <!-- Bump ?v= on both lines whenever css/js change, so browsers fetch them together. -->
-  <link rel="stylesheet" href="css/styles.css?v=9" />
+  <link rel="stylesheet" href="css/styles.css?v=10" />
 </head>
 <body>
   <header class="topbar">
@@ -23,6 +23,7 @@
       <a href="#/" data-route="portfolio">Portfolio</a>
       <a href="#/sets" data-route="sets">Sets</a>
       <a href="#/cards" data-route="cards">Card Explorer</a>
+      <a href="#/binders" data-route="binders">Binders</a>
       <a href="#/settings" data-route="settings">Settings</a>
     </nav>
     <a id="syncchip" class="syncchip" href="#/settings" hidden><i aria-hidden="true"></i><span>Synced</span></a>
@@ -45,6 +46,9 @@
       <button class="btn sm" data-sel="none" data-need>Clear selection</button>
       <button class="btn sm primary" data-sel="own" data-need>✓ Mark owned</button>
       <button class="btn sm danger" data-sel="remove" data-need>Remove</button>
+      <button class="btn sm" data-sel="front" data-need data-binder-only hidden>Move to start</button>
+      <button class="btn sm" data-sel="back" data-need data-binder-only hidden>Move to end</button>
+      <button class="btn sm danger" data-sel="unbind" data-need data-binder-only hidden>Take out of binder</button>
       <button class="btn sm" data-sel="done">Done</button>
     </div>
   </div>
@@ -56,6 +60,6 @@
     Pokémon and its trademarks are © Nintendo, Creatures &amp; GAME FREAK. Not affiliated.
   </footer>
 
-  <script src="js/app.js?v=9" type="module"></script>
+  <script src="js/app.js?v=10" type="module"></script>
 </body>
 </html>

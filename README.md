@@ -24,6 +24,12 @@ A dark-purple, no-build static website for tracking Pokémon card master sets.
   (open a card's **i** details). The portfolio splits raw and graded value and lists your slabs; the Card Explorer
   has a *Graded* filter. There is no free source of graded prices, so values are entered by you (each card links
   to eBay sold listings for that grade); a slab without a value counts at the raw price.
+- **My binders** – make your own binders (a favourite Pokémon, an artist, a theme) from any cards in any set:
+  search, tap to add, or *Add all results*; reorder with Select → Move to start / end; view as a grid or a
+  flip-through binder. Binders sync with your collection.
+- **Search finds Pokémon in the artwork** – searching "Snivy" also finds Fates Collide Jigglypuff 65/124, where
+  Snivy appears in the background (marked ✦ in art). Data: [RotomAmiti's Cameo Pokémon Card Database](https://docs.google.com/spreadsheets/d/18nIkOgqQrHZTz0TrH_gL1e1nL1RcHiCmPF5finAjToY),
+  rebuilt by `python3 scripts/build_cameos.py`.
 - **Sync across devices** – in Settings, connect a GitHub token (gist permission only) and your collection
   is saved to a private gist and kept in step on every device. Each person uses their own account (or their
   own collection name on a shared account), so collections stay separate.

@@ -17,6 +17,13 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/build-data.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refresh artwork cameos
+        run: |
+          pip install openpyxl
+          python3 scripts/build_cameos.py || echo "Cameo sheet unavailable - keeping the previous data/cameos.json"
       - name: Commit updated data
         run: |
           git config user.name "github-actions[bot]"

@@ -64,9 +64,13 @@ async function loadRates() {
 // Removed cards are remembered ("tombstones") so a removal syncs to other devices.
 const LS_TOMBS = 'pokevault.deleted.v1';
 let tombs = load(LS_TOMBS, {}); // { key: removedAt }
+// Custom binders: { id: { id, name, cards: [cardKey], layout, created, m } }; deleted ones keep { id, del, m }
+const LS_BINDERS = 'pokevault.binders.v1';
+let binders = load(LS_BINDERS, {});
 function saveCollection({ fromSync = false } = {}) {
   save(LS_COLLECTION, collection);
   save(LS_TOMBS, tombs);
+  save(LS_BINDERS, binders);
   if (!fromSync) Sync.changed();
 }
 /** remove everything (keeps tombstones so other devices remove it too) */
@@ -155,7 +159,7 @@ const Sync = (() => {
     return res.status === 204 ? null : res.json();
   }
 
-  const payload = () => JSON.stringify({ app: 'pokevault', version: 2, updated: new Date().toISOString(), collection, deleted: tombs });
+  const payload = () => JSON.stringify({ app: 'pokevault', version: 2, updated: new Date().toISOString(), collection, deleted: tombs, binders });
 
   async function findOrCreateGist() {
     if (cfg.gistId) return cfg.gistId;
@@ -218,6 +222,15 @@ const Sync = (() => {
       if (!remoteStale) for (const k of Object.keys(R)) if (!collection[k]) { remoteStale = true; break; }
       if (!remoteStale) for (const [k, m] of Object.entries(tombs)) if (RD[k] !== m) { remoteStale = true; break; }
     }
+    // binders: whole binder, most recent change wins (deletions included)
+    const RB = remote?.binders || {};
+    for (const [id, rb] of Object.entries(RB)) {
+      if (!binders[id] || (rb.m || 0) > (binders[id].m || 0)) {
+        binders[id] = rb;
+        localChanged = true;
+      }
+    }
+    if (!remoteStale) for (const [id, b] of Object.entries(binders)) if (!RB[id] || RB[id].m !== b.m) { remoteStale = true; break; }
     return { localChanged, remoteStale };
   }
 
@@ -677,7 +690,7 @@ function loading(msg = 'Loading…') {
 }
 
 /** One card tile. `entry` = { card, v, set } */
-function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = null } = {}) {
+function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = null, also = null } = {}) {
   const q = qtyOf(card.id, v.k);
   const owned = anyOwned ?? q > 0;
   const k = keyOf(card.id, v.k);
@@ -699,6 +712,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
       slab ? (slab.v != null ? `<span class="value">${money(slabValue(slab, v))}</span>` : '<span class="approx" title="No value entered – counted at the raw price">raw price</span>') : priceHtml(v)
     }</div>
     ${showSet ? `<div class="setname">${esc(set.name)}</div>` : ''}
+    ${also ? `<div class="also" title="Appears in the artwork"><span class="also-chip">✦ in art</span> ${esc(also)}</div>` : ''}
   </div>`;
 }
 
@@ -841,6 +855,11 @@ app.addEventListener('click', (e) => {
   const entry = gridLookup.get(tile.dataset.key);
   if (!entry) return;
   if (btn.dataset.act === 'info') return openCard(entry.card, entry.set);
+  const picker = tile.closest('.picker');
+  if (picker && btn.dataset.act === 'toggle') {
+    pickerToggle?.(entry, tile);
+    return;
+  }
   if (btn.dataset.act === 'toggle' && selectMode) {
     const k = tile.dataset.key;
     if (e.shiftKey && lastSelKey && lastSelKey !== k) {
@@ -902,6 +921,18 @@ selbar.addEventListener('click', (e) => {
     return syncSelection();
   }
   if (act === 'none') return (selected.clear(), syncSelection());
+  if ((act === 'unbind' || act === 'front' || act === 'back') && selBinder) {
+    const keys = [...selected].filter((k) => selBinder.cards.includes(k));
+    const rest = selBinder.cards.filter((k) => !selected.has(k));
+    selBinder.cards = act === 'unbind' ? rest : act === 'front' ? [...keys, ...rest] : [...rest, ...keys];
+    selBinder.m = Date.now();
+    saveCollection();
+    toast(act === 'unbind' ? `Removed ${num(keys.length)} cards from the binder` : `Moved ${num(keys.length)} cards to the ${act === 'front' ? 'start' : 'end'}`);
+    selected.clear();
+    redrawPage?.();
+    syncSelection();
+    return;
+  }
   if (act === 'own' || act === 'remove') {
     let n = 0;
     for (const k of selected) {
@@ -925,7 +956,10 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && selectMode && !modal.open) setSelectMode(false);
 });
 /** wire up a page's "Select" button */
-function bindSelectButton() {
+let selBinder = null; // binder whose page is open (enables the binder-only selection actions)
+function bindSelectButton(binder = null) {
+  selBinder = binder;
+  selbar.querySelectorAll('[data-binder-only]').forEach((b) => (b.hidden = !binder));
   const b = $('#selbtn');
   if (b) b.onclick = () => setSelectMode(!selectMode);
   setSelectMode(false);
@@ -964,8 +998,20 @@ function openCard(card, set) {
           ${card.cat ? `<dt>Category</dt><dd>${esc(card.cat)}${card.ty ? ' · ' + card.ty.map(esc).join(', ') : ''}</dd>` : ''}
           ${card.ill ? `<dt>Illustrator</dt><dd>${esc(card.ill)}</dd>` : ''}
           <dt>Set</dt><dd><a href="#/set/${encodeURIComponent(set.id)}" data-close>${esc(set.name)}</a> <span class="muted">(${esc(set.seriesName)}, ${fmtDate(set.releaseDate)})</span></dd>
+          ${cameosOf(card).length ? `<dt>Also in the art</dt><dd>${cameosOf(card).map(esc).join(', ')}</dd>` : ''}
           <dt>Status</dt><dd>${ownedAny ? '<span style="color:var(--green)">In your collection</span>' : '<span class="muted">Not owned</span>'}</dd>
+          ${(() => {
+            const inB = liveBinders().filter((b) => card.v.some((v) => b.cards.includes(keyOf(card.id, v.k))));
+            return inB.length ? `<dt>In binders</dt><dd>${inB.map((b) => `<a href="#/binder/${encodeURIComponent(b.id)}" data-close>${esc(b.name)}</a>`).join(', ')}</dd>` : '';
+          })()}
         </dl>
+        <div class="addbinder">
+          <select id="addbinder-sel" aria-label="Binder">
+            ${liveBinders().map((b) => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}
+            <option value="__new">＋ New binder…</option>
+          </select>
+          <button class="btn sm" data-addbinder>Add to binder</button>
+        </div>
         <h3 style="margin:18px 0 10px">Printings in the master set</h3>
         <div class="variant-list">
           ${card.v
@@ -1022,6 +1068,24 @@ function openCard(card, set) {
     if (e.target.closest('[data-cancelslab]')) {
       addingSlab = null;
       return render();
+    }
+    if (e.target.closest('[data-addbinder]')) {
+      let id = modal.querySelector('#addbinder-sel').value;
+      if (id === '__new') {
+        const name = prompt('Name for the new binder');
+        if (!name || !name.trim()) return;
+        id = createBinder(name).id;
+      }
+      const b = binders[id];
+      // add the printing you own (or the first printing) of this card
+      const v = card.v.find((x) => qtyOf(card.id, x.k)) || card.v[0];
+      const k = keyOf(card.id, v.k);
+      if (b.cards.includes(k)) return toast(`Already in ${b.name}`);
+      b.cards.push(k);
+      touchBinder(b);
+      changedWhileModal = true;
+      render();
+      return toast(`Added to ${b.name}`);
     }
     const rm = e.target.closest('[data-rmslab]');
     if (rm) {
@@ -1321,6 +1385,7 @@ async function pageSet(id) {
     return;
   }
   const meta = idx.byId.get(id) || set;
+  await getCameos();
 
   app.innerHTML = `
     <a class="back" href="#/sets">← All sets</a>
@@ -1345,7 +1410,7 @@ async function pageSet(id) {
         <option value="number">Set order</option><option value="value-desc">Value: high → low</option>
         <option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
       </select>
-      <div class="grow"><input class="search" id="q" type="search" placeholder="Search name or number…" autocomplete="off"></div>
+      <div class="grow"><input class="search" id="q" type="search" placeholder="Search name, number or a Pokémon in the art…" autocomplete="off"></div>
       <select id="layout" aria-label="Layout" title="Show the set as binder pages">
         <option value="grid">Grid</option>
         <option value="2x2">Binder · 4-pocket (2×2)</option>
@@ -1391,11 +1456,14 @@ async function pageSet(id) {
     const base = prefs.mode === 'base';
     let list = [];
     for (const card of set.cards) {
-      if (q && !card.name.toLowerCase().includes(q) && card.n.toLowerCase() !== q && !(card.n.replace(/^0+/, '') === q.replace(/^0+/, ''))) continue;
+      const numHit = q && (card.n.toLowerCase() === q || card.n.replace(/^0+/, '') === q.replace(/^0+/, ''));
+      const hit = numHit ? { by: 'name' } : searchHit(card, q);
+      if (!hit) continue;
+      const also = hit.by === 'cameo' ? hit.names.join(', ') : null;
       if (base) {
         const ownedV = card.v.find((v) => qtyOf(card.id, v.k));
-        list.push({ card, v: ownedV || card.v[0], set, base: true, maxP: Math.max(0, ...card.v.map(priceNum)) });
-      } else for (const v of card.v) list.push({ card, v, set });
+        list.push({ card, v: ownedV || card.v[0], set, base: true, also, maxP: Math.max(0, ...card.v.map(priceNum)) });
+      } else for (const v of card.v) list.push({ card, v, set, also });
     }
     const isOwned = (e) => (e.base ? e.card.v.some((v) => qtyOf(e.card.id, v.k)) : qtyOf(e.card.id, e.v.k) > 0);
     if (prefs.filter === 'owned') list = list.filter(isOwned);
@@ -1409,7 +1477,8 @@ async function pageSet(id) {
     const html = list.map((e) => {
       const k = keyOf(e.card.id, e.v.k);
       gridLookup.set(k, e);
-      return tileHtml(e, e.base ? { anyOwned: isOwned(e) } : {});
+      e.tileOpts = { also: e.also, ...(e.base ? { anyOwned: isOwned(e) } : {}) };
+      return tileHtml(e, e.tileOpts);
     });
     if (!list.length) $('#grid').innerHTML = '<div class="empty"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
     else if (BINDERS[prefs.layout]) mountBinder($('#grid'), html, prefs.layout, set.id);
@@ -1471,6 +1540,7 @@ async function pageCards() {
     const b = app.querySelector('#lp .bar i');
     if (b) b.style.width = `${(d / t) * 100}%`;
   });
+  await getCameos();
   if (location.hash.split('?')[0] !== '#/cards') return; // navigated away meanwhile
   const all = [];
   for (const s of sets) for (const card of s.cards) for (const v of card.v) all.push({ card, v, set: s });
@@ -1478,7 +1548,7 @@ async function pageCards() {
 
   app.innerHTML = `<h1>Card Explorer</h1><p class="muted">Every printing from every set (${num(all.length)} in total), sorted across sets.</p>
     <div class="toolbar">
-      <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card, e.g. Charizard…" autocomplete="off"></div>
+      <div class="grow"><input class="search" id="q" type="search" placeholder="Search any card or a Pokémon in the art, e.g. Snivy…" autocomplete="off"></div>
       <div class="seg" id="filter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="graded">Graded</button><button data-v="missing">Missing</button></div>
       <select id="series" aria-label="Era"><option value="all">All eras</option>${seriesList.map(([id, n]) => `<option value="${esc(id)}">${esc(n)}</option>`).join('')}</select>
       <select id="sort" aria-label="Sort">
@@ -1502,7 +1572,11 @@ async function pageCards() {
     const q = $('#q').value.trim().toLowerCase();
     list = all.filter((e) => {
       if (prefs.exSeries !== 'all' && e.set.series !== prefs.exSeries) return false;
-      if (q && !e.card.name.toLowerCase().includes(q) && !e.set.name.toLowerCase().includes(q)) return false;
+      if (q) {
+        const hit = searchHit(e.card, q, e.set.name);
+        if (!hit) return false;
+        e.also = hit.by === 'cameo' ? hit.names.join(', ') : null;
+      } else e.also = null;
       if (prefs.exFilter === 'owned' && !qtyOf(e.card.id, e.v.k)) return false;
       if (prefs.exFilter === 'missing' && qtyOf(e.card.id, e.v.k)) return false;
       if (prefs.exFilter === 'graded' && !gradedOf(e.card.id, e.v.k).length) return false;
@@ -1525,8 +1599,8 @@ async function pageCards() {
     $('#grid').innerHTML =
       slice
         .map((e) => {
-          gridLookup.set(keyOf(e.card.id, e.v.k), { ...e, tileOpts: { showSet: true } });
-          return tileHtml(e, { showSet: true });
+          gridLookup.set(keyOf(e.card.id, e.v.k), { ...e, tileOpts: { showSet: true, also: e.also } });
+          return tileHtml(e, { showSet: true, also: e.also });
         })
         .join('') || '<div class="empty" style="grid-column:1/-1"><h3>No cards match</h3></div>';
     const owned =
@@ -1555,6 +1629,338 @@ async function pageCards() {
   redrawPage = render;
   mark();
   compute();
+}
+
+// --------------------------------------------------------------------------
+// Cameos: other Pokémon that appear in a card's artwork (data/cameos.json)
+// --------------------------------------------------------------------------
+let CAMEOS = null;
+async function getCameos() {
+  if (!CAMEOS) {
+    try {
+      CAMEOS = (await (await fetch('data/cameos.json')).json()).cards || {};
+    } catch {
+      CAMEOS = {};
+    }
+  }
+  return CAMEOS;
+}
+const cameosOf = (card) => (CAMEOS && CAMEOS[card.id]) || [];
+/** does the card match the search? 'name' | 'cameo' | null (cameo hits return the matching names) */
+function searchHit(card, q, extra = '') {
+  if (!q) return { by: 'name' };
+  if (card.name.toLowerCase().includes(q) || (extra && extra.toLowerCase().includes(q))) return { by: 'name' };
+  const hits = cameosOf(card).filter((n) => n.toLowerCase().includes(q));
+  return hits.length ? { by: 'cameo', names: hits } : null;
+}
+
+// --------------------------------------------------------------------------
+// Custom binders
+// --------------------------------------------------------------------------
+const liveBinders = () => Object.values(binders).filter((b) => !b.del).sort((a, b) => (a.created || 0) - (b.created || 0));
+function createBinder(name) {
+  const id = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  binders[id] = { id, name: name.trim().slice(0, 60) || 'My binder', cards: [], layout: '3x3', created: Date.now(), m: Date.now() };
+  saveCollection();
+  return binders[id];
+}
+function touchBinder(b) {
+  b.m = Date.now();
+  saveCollection();
+}
+/** resolve binder keys ("cardId|variant") to { card, v, set } entries, in binder order */
+async function binderEntries(b, onProgress) {
+  const setIds = [...new Set(b.cards.map((k) => setIdOfCard(k.split('|')[0])))];
+  const sets = await getSets(setIds, onProgress);
+  const byCard = new Map();
+  for (const s of sets) for (const c of s.cards) byCard.set(c.id, { c, s });
+  const out = [];
+  for (const k of b.cards) {
+    const [cid, vk] = k.split('|');
+    const hit = byCard.get(cid);
+    const v = hit?.c.v.find((x) => x.k === vk);
+    if (v) out.push({ card: hit.c, v, set: hit.s });
+  }
+  return out;
+}
+
+async function pageBinders() {
+  await getIndex();
+  const list = liveBinders();
+  // cover = first card of each binder
+  const covers = new Map();
+  await Promise.all(
+    list.map(async (b) => {
+      if (!b.cards.length) return;
+      const [cid] = b.cards[0].split('|');
+      try {
+        const s = await getSet(setIdOfCard(cid));
+        covers.set(b.id, s.cards.find((c) => c.id === cid));
+      } catch {}
+    }),
+  );
+  app.innerHTML = `<h1>My binders</h1>
+    <p class="muted">Make your own binders – a favourite Pokémon, an artist, a colour theme – from any cards in any set.</p>
+    <form class="panel newbinder" id="newbinder">
+      <label for="bname">New binder</label>
+      <input id="bname" type="text" maxlength="60" placeholder="e.g. Jigglypuff collection" autocomplete="off" required>
+      <button class="btn primary" type="submit">＋ Create binder</button>
+    </form>
+    ${
+      list.length
+        ? `<div class="binder-list">${list
+            .map((b) => {
+              const owned = b.cards.filter((k) => collection[k]).length;
+              const p = pct(owned, b.cards.length);
+              const cover = covers.get(b.id);
+              return `<a class="binder-card" href="#/binder/${encodeURIComponent(b.id)}">
+                <div class="bc-cover">${cover && imgUrl(cover) ? `<img class="card-img" src="${esc(imgUrl(cover))}" alt="" loading="lazy">` : '<span>Empty</span>'}</div>
+                <div class="bc-body"><div class="bc-name">${esc(b.name)}</div>
+                  <div class="muted">${num(b.cards.length)} cards · ${num(owned)} owned</div>${bar(p, p >= 100 && b.cards.length > 0)}</div>
+              </a>`;
+            })
+            .join('')}</div>`
+        : '<div class="empty"><h3>No binders yet</h3><p>Give your first binder a name above, then add cards to it.</p></div>'
+    }`;
+  $('#newbinder').onsubmit = (e) => {
+    e.preventDefault();
+    const b = createBinder($('#bname').value);
+    location.hash = `#/binder/${encodeURIComponent(b.id)}/add`;
+  };
+}
+
+let pickerToggle = null; // set while the "add cards" picker is open
+async function pageBinder(id, sub) {
+  const b = binders[id];
+  if (!b || b.del) {
+    app.innerHTML = `<div class="empty"><h3>Binder not found</h3><a class="btn" href="#/binders">Back to binders</a></div>`;
+    return;
+  }
+  await getIndex();
+  await getCameos();
+  if (sub === 'add') return binderPicker(b);
+  loading('Opening binder…');
+  let entries = await binderEntries(b);
+  b.sort = b.sort || 'custom';
+  b.filter = b.filter || 'all';
+  app.innerHTML = `
+    <a class="back" href="#/binders">← All binders</a>
+    <section class="panel binder-head">
+      <div><h1 id="bname">${esc(b.name)}</h1><div class="meta muted" id="bmeta"></div></div>
+      <div class="row">
+        <a class="btn primary" href="#/binder/${encodeURIComponent(b.id)}/add">＋ Add cards</a>
+        <button class="btn" id="brename">Rename</button>
+        <button class="btn danger" id="bdelete">Delete</button>
+      </div>
+      <div class="set-stats" id="bstats"></div>
+    </section>
+    <div class="toolbar">
+      <div class="seg" id="bfilter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
+      <select id="bsort" aria-label="Order">
+        <option value="custom">Binder order</option><option value="release">Oldest set first</option><option value="newest">Newest set first</option>
+        <option value="value-desc">Value: high → low</option><option value="value-asc">Value: low → high</option><option value="name">Name A–Z</option>
+      </select>
+      <select id="blayout" aria-label="Layout">
+        <option value="grid">Grid</option><option value="2x2">Binder · 4-pocket (2×2)</option><option value="3x3">Binder · 9-pocket (3×3)</option>
+        <option value="4x3">Binder · 12-pocket (4×3)</option><option value="4x4">Binder · 16-pocket (4×4)</option>
+      </select>
+      <span class="count" id="count"></span>
+      <button class="btn sm" id="selbtn" aria-pressed="false" title="Select cards to reorder, remove from the binder or mark owned">☐ Select</button>
+    </div>
+    <div id="grid"></div>`;
+
+  const stats = () => {
+    let owned = 0, have = 0, need = 0;
+    for (const e of entries) {
+      const p = priceNum(e.v);
+      if (qtyOf(e.card.id, e.v.k)) (owned++, (have += heldValue(e.card.id, e.v).total));
+      else need += p;
+    }
+    const p = pct(owned, entries.length);
+    $('#bmeta').textContent = `${num(entries.length)} cards from ${num(new Set(entries.map((e) => e.set.id)).size)} sets`;
+    $('#bstats').innerHTML = `
+      <div class="stat"><b>${num(owned)} / ${num(entries.length)}</b><span>Cards owned</span>${bar(p, p >= 100 && entries.length > 0)}</div>
+      <div class="stat"><b class="value">${money(have)}</b><span>Value of what you own</span></div>
+      <div class="stat"><b class="value">${money(need)}</b><span>Cost to complete</span></div>`;
+  };
+  const draw = () => {
+    let list = entries.slice();
+    const isOwned = (e) => qtyOf(e.card.id, e.v.k) > 0;
+    if (b.filter === 'owned') list = list.filter(isOwned);
+    if (b.filter === 'missing') list = list.filter((e) => !isOwned(e));
+    const so = b.sort;
+    if (so === 'value-desc') list.sort((x, y) => priceNum(y.v) - priceNum(x.v));
+    else if (so === 'value-asc') list.sort((x, y) => (priceNum(x.v) || Infinity) - (priceNum(y.v) || Infinity));
+    else if (so === 'name') list.sort((x, y) => x.card.name.localeCompare(y.card.name));
+    else if (so === 'release' || so === 'newest') {
+      const dir = so === 'newest' ? -1 : 1;
+      list.sort((x, y) => dir * (x.set.releaseDate || '').localeCompare(y.set.releaseDate || '') || x.card.idx - y.card.idx);
+    }
+    gridLookup = new Map();
+    const tiles = list.map((e) => {
+      gridLookup.set(keyOf(e.card.id, e.v.k), { ...e, tileOpts: { showSet: true } });
+      return tileHtml(e, { showSet: true });
+    });
+    if (!entries.length)
+      $('#grid').innerHTML = `<div class="empty"><h3>This binder is empty</h3><p>Search for a Pokémon and add its cards – including ones where it appears in the background.</p>
+        <a class="btn primary" href="#/binder/${encodeURIComponent(b.id)}/add">＋ Add cards</a></div>`;
+    else if (!list.length) $('#grid').innerHTML = '<div class="empty"><h3>Nothing here</h3><p>Try a different filter.</p></div>';
+    else if (BINDERS[b.layout]) mountBinder($('#grid'), tiles, b.layout, 'binder:' + b.id);
+    else $('#grid').innerHTML = gridHtml(tiles);
+    $('#count').textContent = `${num(list.length)} shown`;
+    stats();
+  };
+  const seg = $('#bfilter');
+  const markSeg = () => seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === b.filter));
+  seg.onclick = (e) => {
+    const x = e.target.closest('button');
+    if (!x) return;
+    b.filter = x.dataset.v;
+    save(LS_BINDERS, binders);
+    markSeg();
+    draw();
+  };
+  $('#bsort').value = b.sort;
+  $('#bsort').onchange = (e) => ((b.sort = e.target.value), save(LS_BINDERS, binders), draw());
+  $('#blayout').value = b.layout || 'grid';
+  $('#blayout').onchange = (e) => ((b.layout = e.target.value), touchBinder(b), draw());
+  $('#brename').onclick = () => {
+    const name = prompt('Rename binder', b.name);
+    if (!name || !name.trim()) return;
+    b.name = name.trim().slice(0, 60);
+    touchBinder(b);
+    $('#bname').textContent = b.name;
+  };
+  $('#bdelete').onclick = () => {
+    if (!confirm(`Delete the binder "${b.name}"? Your cards stay in your collection.`)) return;
+    binders[b.id] = { id: b.id, del: true, m: Date.now() };
+    saveCollection();
+    toast('Binder deleted');
+    location.hash = '#/binders';
+  };
+  afterToggle = stats;
+  bindSelectButton(b);
+  redrawPage = async () => {
+    entries = await binderEntries(b);
+    draw();
+  };
+  draw();
+  startLive([...new Set(entries.map((e) => e.card))], draw);
+}
+
+/** search every card (names and cameos) and tap to add/remove from the binder */
+async function binderPicker(b) {
+  const idx = await getIndex();
+  app.innerHTML = `<a class="back" href="#/binder/${encodeURIComponent(b.id)}">← Back to ${esc(b.name)}</a>
+    <h1>Add cards to ${esc(b.name)}</h1>
+    <div class="load-progress" id="lp">Loading every set…${bar(0)}</div>`;
+  const sets = await getSets(idx.sets.map((s) => s.id), (d, t) => {
+    const x = app.querySelector('#lp .bar i');
+    if (x) x.style.width = `${(d / t) * 100}%`;
+  });
+  if (!location.hash.endsWith('/add')) return;
+  sets.sort((x, y) => (x.releaseDate || '').localeCompare(y.releaseDate || ''));
+  const inBinder = new Set(b.cards);
+  b.pickMode = b.pickMode || 'card';
+  app.innerHTML = `<a class="back" href="#/binder/${encodeURIComponent(b.id)}">← Back to ${esc(b.name)}</a>
+    <h1>Add cards to ${esc(b.name)}</h1>
+    <p class="muted">Search a Pokémon, then tap cards to add or remove them. Cards where it appears in the artwork are included and marked <span class="also-chip">✦ in art</span>.</p>
+    <div class="toolbar">
+      <div class="grow"><input class="search" id="q" type="search" placeholder="Search a Pokémon, card or set, e.g. Jigglypuff" autocomplete="off" value="${esc(b.lastSearch || '')}"></div>
+      <div class="seg" id="pmode" title="Show one tile per card, or every printing (reverse holo, stamps…)">
+        <button data-v="card">One per card</button><button data-v="all">Every printing</button>
+      </div>
+      <div class="seg" id="pcam"><button data-v="yes">Include cameos</button><button data-v="no">Name only</button></div>
+      <span class="count" id="count"></span>
+      <button class="btn sm" id="addall">＋ Add all results</button>
+      <a class="btn sm primary" href="#/binder/${encodeURIComponent(b.id)}">Done</a>
+    </div>
+    <div class="card-grid picker" id="grid"></div>
+    <div class="more"><button class="btn" id="more">Show more</button></div>`;
+  let results = [], limit = 120;
+  let cam = 'yes';
+  const compute = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    b.lastSearch = $('#q').value.trim();
+    results = [];
+    if (q.length >= 2) {
+      for (const s of sets)
+        for (const card of s.cards) {
+          const hit = searchHit(card, q, s.name);
+          if (!hit || (hit.by === 'cameo' && cam === 'no')) continue;
+          // one per card: the printing already in the binder, else the regular (unlimited, unstamped) one
+          const plain = card.v.find((v) => !v.s && !v.f && !v.z && (!v.sub || v.sub === 'unlimited')) || card.v[0];
+          const vs = b.pickMode === 'all' ? card.v : [card.v.find((v) => b.cards.includes(keyOf(card.id, v.k))) || plain];
+          for (const v of vs) results.push({ card, v, set: s, also: hit.by === 'cameo' ? hit.names.join(', ') : null });
+        }
+    }
+    limit = 120;
+    render();
+  };
+  const render = () => {
+    gridLookup = new Map();
+    const q = $('#q').value.trim();
+    $('#grid').innerHTML =
+      q.length < 2
+        ? '<div class="empty" style="grid-column:1/-1"><h3>Search to find cards</h3><p>Try a Pokémon name like Jigglypuff, an artist-style theme like Eevee, or a set name.</p></div>'
+        : results.length
+          ? results
+              .slice(0, limit)
+              .map((e) => {
+                const k = keyOf(e.card.id, e.v.k);
+                gridLookup.set(k, e);
+                return tileHtml(e, { showSet: true, also: e.also }).replace('class="tile', `class="tile${inBinder.has(k) ? ' inbinder' : ''}`);
+              })
+              .join('')
+          : '<div class="empty" style="grid-column:1/-1"><h3>No cards found</h3></div>';
+    const added = results.filter((e) => inBinder.has(keyOf(e.card.id, e.v.k))).length;
+    $('#count').textContent = q.length < 2 ? '' : `${num(results.length)} found · ${num(added)} in binder`;
+    $('#more').style.display = results.length > limit ? '' : 'none';
+    $('#addall').disabled = !results.length;
+  };
+  pickerToggle = (entry, tile) => {
+    const k = keyOf(entry.card.id, entry.v.k);
+    if (inBinder.has(k)) {
+      inBinder.delete(k);
+      b.cards = b.cards.filter((x) => x !== k);
+    } else {
+      inBinder.add(k);
+      b.cards.push(k);
+    }
+    touchBinder(b);
+    tile.classList.toggle('inbinder', inBinder.has(k));
+    const added = results.filter((e) => inBinder.has(keyOf(e.card.id, e.v.k))).length;
+    $('#count').textContent = `${num(results.length)} found · ${num(added)} in binder`;
+  };
+  $('#addall').onclick = () => {
+    const toAdd = results.map((e) => keyOf(e.card.id, e.v.k)).filter((k) => !inBinder.has(k));
+    if (!toAdd.length) return toast('All of these are already in the binder');
+    if (toAdd.length > 50 && !confirm(`Add ${toAdd.length} cards to ${b.name}?`)) return;
+    toAdd.forEach((k) => (inBinder.add(k), b.cards.push(k)));
+    touchBinder(b);
+    render();
+    toast(`Added ${num(toAdd.length)} cards`);
+  };
+  const bindSeg = (id, get, set) => {
+    const seg = $('#' + id);
+    const mark = () => seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === get()));
+    seg.onclick = (e) => {
+      const x = e.target.closest('button');
+      if (!x) return;
+      set(x.dataset.v);
+      mark();
+      compute();
+    };
+    mark();
+  };
+  bindSeg('pmode', () => b.pickMode, (v) => ((b.pickMode = v), save(LS_BINDERS, binders)));
+  bindSeg('pcam', () => cam, (v) => (cam = v));
+  let t;
+  $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(compute, 200)));
+  $('#more').onclick = () => ((limit += 120), render());
+  afterToggle = () => {};
+  compute();
+  $('#q').focus();
 }
 
 async function pageSettings() {
@@ -1734,7 +2140,8 @@ async function route(keepScroll = false) {
   const hash = location.hash || '#/';
   const [, page, arg] = hash.split('?')[0].split('/');
   const name = page || 'portfolio';
-  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (name === 'set' ? 'sets' : name)));
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (name === 'set' ? 'sets' : name === 'binder' ? 'binders' : name)));
+  pickerToggle = null;
   document.title = 'PokéVault – Card Set Tracker';
   const y = window.scrollY;
   if (modal.open) modal.close();
@@ -1744,6 +2151,8 @@ async function route(keepScroll = false) {
     else if (name === 'set') await pageSet(decodeURIComponent(arg || ''));
     else if (name === 'cards') await pageCards();
     else if (name === 'settings') await pageSettings();
+    else if (name === 'binders') await pageBinders();
+    else if (name === 'binder') await pageBinder(decodeURIComponent(arg || ''), hash.split('?')[0].split('/')[3]);
     else await pagePortfolio();
   } catch (e) {
     console.error(e);
