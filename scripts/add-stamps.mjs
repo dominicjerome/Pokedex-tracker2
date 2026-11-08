@@ -86,7 +86,7 @@ const MAIN_GROUP = {
   swsh10tg: 'Astral Radiance Trainer Gallery', swsh11tg: 'Lost Origin Trainer Gallery', swsh12tg: 'Silver Tempest Trainer Gallery',
   'swsh10.5': 'Pokemon GO', 'swsh12.5': 'Crown Zenith', 'swsh12.5gg': 'Crown Zenith: Galarian Gallery', sv01: 'SV01: Scarlet & Violet Base Set',
   'sv03.5': 'SV: Scarlet & Violet 151', 'sv04.5': 'SV: Paldean Fates', 'sv06.5': 'SV: Shrouded Fable', 'sv08.5': 'SV: Prismatic Evolutions',
-  'sv10.5b': 'SV: Black Bolt', 'sv10.5w': 'SV: White Flare', 'me02.5': 'ME: Ascended Heroes', '30th': 'ME: 30th Celebration',
+  'sv10.5b': 'SV: Black Bolt', 'sv10.5w': 'SV: White Flare', 'me02.5': 'ME: Ascended Heroes', '30th': 'ME: 30th Celebration', '30th-c': 'ME: 30th Celebration Classic Collection',
 };
 const PATTERNS = [
   [/master ball/i, 'masterball'], [/poke ?ball/i, 'pokeball'], [/energy symbol/i, 'energy'],
@@ -127,7 +127,13 @@ async function completionOps(groups, sets) {
     const patternsListed = products.results.some((p) => [...p.name.matchAll(/\(([^)]*)\)/g)].some((t) => PATTERNS.some(([re]) => re.test(t[1]))));
     for (const p of products.results) {
       const number = (p.extendedData || []).find((e) => e.name === 'Number')?.value;
-      const c = number && byNum.get(numKey(number));
+      let c = number && byNum.get(numKey(number));
+      // classic-collection reprints keep their original numbers on TCGplayer: match those by (unique) name
+      if (/classic collection/i.test(set.name) && !set.id.startsWith('cel25')) {
+        const pn = norm(p.name.split(' - ')[0].replace(/\s*[([].*$/, ''));
+        const hits = set.cards.filter((x) => norm(x.name) === pn);
+        c = hits.length === 1 ? hits[0] : null;
+      }
       if (!c) continue;
       const base = norm(p.name.split(' - ')[0].replace(/\s*[([].*$/, ''));
       const cn = norm(c.name);
@@ -220,7 +226,7 @@ function applyOps(c, list) {
       const v = c.v.find((x) => x.f === o.f && x.t === 'reverse');
       if (v) { if (!v.im) v.im = o.im; if (v.u == null && o.u != null) v.u = o.u; }
     } else if (o.op === 'price') {
-      const v = c.v.find((x) => x.t === 'normal' && isPlainV(x) && !(x.s || []).length);
+      const v = c.v.find((x) => x.t === 'normal' && isPlainV(x) && !(x.s || []).length) || (c.v.length === 1 ? c.v[0] : null);
       if (v && v.u == null && o.u != null) v.u = o.u;
     }
   }

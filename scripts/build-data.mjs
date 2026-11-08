@@ -334,7 +334,9 @@ async function finalizeIndex() {
       if (!c.v.some((v) => v.f === 'gold' && v.t === 'holo' && plain(v))) continue;
       for (const v of c.v) if (v.t === 'holo' && !v.f && plain(v)) v.x = 1;
     }
-    const sum = (key) => Math.round(vs.reduce((a, v) => a + (v[key] ?? (key === 'u' ? (v.e ?? 0) * EUR_TO_USD : (v.u ?? 0) / EUR_TO_USD)), 0) * 100) / 100;
+    // a Cardmarket price far below TCGplayer's (launch week) isn't trusted – same rule as the site
+    const eur = (v) => (v.e != null && !(v.u >= 5 && v.e * EUR_TO_USD < v.u * 0.2) ? v.e : (v.u ?? 0) / EUR_TO_USD);
+    const sum = (key) => Math.round(vs.reduce((a, v) => a + (key === 'u' ? v.u ?? (v.e ?? 0) * EUR_TO_USD : eur(v)), 0) * 100) / 100;
     Object.assign(set, { total: set.cards.length, variants: vs.length, valueUSD: sum('u'), valueEUR: sum('e') });
     await writeFile(file, JSON.stringify(set));
     Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, standard: vs.filter((v) => !stamped(v) && !v.x).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });

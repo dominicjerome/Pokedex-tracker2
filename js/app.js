@@ -609,6 +609,8 @@ function ownedBySet() {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 /** price of a variant in the chosen currency → { v: number|null, approx: bool } */
+// A Cardmarket price far below TCGplayer's (common in a set's launch week) isn't trusted
+const euroOk = (v) => v.e != null && !(v.u >= 5 && v.e * FX.USD < v.u * 0.2);
 function priceOf(v) {
   const cur = prefs.currency;
   if (cur === 'USD') {
@@ -617,7 +619,7 @@ function priceOf(v) {
   } else {
     // EUR and GBP both come from Cardmarket (GBP converted at today's rate)
     const k = cur === 'GBP' ? FX.GBP : 1;
-    if (v.e != null) return { v: v.e * k, approx: false };
+    if (euroOk(v)) return { v: v.e * k, approx: false };
     if (v.u != null) return { v: (v.u / FX.USD) * k, approx: true };
   }
   return { v: null, approx: false };
