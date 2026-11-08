@@ -780,7 +780,9 @@ const isStampedKey = (key) => {
 /** part of the standard master set? (not stamped, not a tin/blister/box extra or duplicate listing – flagged x by the build) */
 const isStandard = (v) => !!v.std || (!isStamped(v) && !v.x);
 /** printings shown in the current mode */
-const visibleV = (card) => (prefs.master === 'standard' ? card.v.filter(isStandard) : card.v);
+// duplicate listings (a printing that was never made, or the same card listed twice) are hidden unless you own one
+const realV = (card) => card.v.filter((v) => !v.dup || qtyOf(card.id, v.k));
+const visibleV = (card) => (prefs.master === 'standard' ? realV(card).filter(isStandard) : realV(card));
 const masterLabel = () => (prefs.master === 'standard' ? 'standard master set' : 'true master set');
 const MASTER_SEG = `<div class="seg mset" title="Standard: every card plus its regular printings (normal, holo, reverse, 1st Edition, set patterns) – what checklists count. True: also stamped, Prize Pack, and tin / blister / box versions.">
   <button data-v="standard">Standard master set</button><button data-v="true">True master set</button></div>`;
@@ -1175,7 +1177,7 @@ function openCard(card, set) {
         </div>
         <h3 style="margin:18px 0 10px">Printings in the master set</h3>
         <div class="variant-list">
-          ${card.v
+          ${realV(card)
             .map((v) => {
               const raw = rawOf(card.id, v.k);
               const slabs = sortSlabs(gradedOf(card.id, v.k));
@@ -1705,7 +1707,7 @@ async function pageSet(id) {
       const also = hit.by === 'cameo' ? hit.names.join(', ') : null;
       if (base) {
         const ownedV = card.v.find((v) => qtyOf(card.id, v.k));
-        list.push({ card, v: ownedV || card.v[0], set, base: true, also, maxP: Math.max(0, ...card.v.map(priceNum)) });
+        list.push({ card, v: ownedV || realV(card)[0] || card.v[0], set, base: true, also, maxP: Math.max(0, ...realV(card).map(priceNum)) });
       } else for (const v of visibleV(card)) list.push({ card, v, set, also });
     }
     const isOwned = (e) => (e.base ? e.card.v.some((v) => qtyOf(e.card.id, v.k)) : qtyOf(e.card.id, e.v.k) > 0);
@@ -1838,6 +1840,7 @@ async function pageCards() {
     list = all.filter((e) => {
       if (prefs.exSeries !== 'all' && e.set.series !== prefs.exSeries) return false;
       if (prefs.master === 'standard' && !isStandard(e.v)) return false;
+      if (e.v.dup && !qtyOf(e.card.id, e.v.k)) return false;
       if (q) {
         const hit = searchHit(e.card, q, e.set.name);
         if (!hit) return false;

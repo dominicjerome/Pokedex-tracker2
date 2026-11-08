@@ -321,10 +321,14 @@ async function mergeSubsets(index) {
   }
 }
 
+// set names the card database has wrong (two different sets under one name)
+const NAME_FIXES = { 'ja/SV4a': 'シャイニートレジャーex' };
+
 async function finalizeIndex() {
   const indexPath = path.join(OUT, 'sets.json');
   if (!existsSync(indexPath)) return;
   const index = JSON.parse(await readFile(indexPath, 'utf8'));
+  for (const meta of index.sets) if (NAME_FIXES[meta.id]) meta.name = NAME_FIXES[meta.id];
   await mergeSubsets(index);
   await extractJumbos(index);
   const stamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
@@ -363,14 +367,16 @@ async function finalizeIndex() {
     for (const c of set.cards) {
       const plain = (v) => !stamped(v) && !v.z && !(v.s || []).length;
       if (!c.v.some((v) => v.f === 'gold' && v.t === 'holo' && plain(v))) continue;
-      for (const v of c.v) if (v.t === 'holo' && !v.f && plain(v)) v.x = 1;
+      for (const v of c.v) if (v.t === 'holo' && !v.f && plain(v)) (v.x = 1), (v.dup = 1);
     }
     // a Cardmarket price far below TCGplayer's (launch week) isn't trusted – same rule as the site
     const eur = (v) => (v.e != null && !(v.u >= 5 && v.e * EUR_TO_USD < v.u * 0.2) ? v.e : (v.u ?? 0) / EUR_TO_USD);
-    const sum = (key) => Math.round(vs.reduce((a, v) => a + (key === 'u' ? v.u ?? (v.e ?? 0) * EUR_TO_USD : eur(v)), 0) * 100) / 100;
-    Object.assign(set, { total: set.cards.length, variants: vs.length, valueUSD: sum('u'), valueEUR: sum('e') });
+    const sum = (key) => Math.round(vs.filter((v) => !v.dup).reduce((a, v) => a + (key === 'u' ? v.u ?? (v.e ?? 0) * EUR_TO_USD : eur(v)), 0) * 100) / 100;
+    const real = vs.filter((v) => !v.dup); // duplicate listings aren't real printings
+    if (NAME_FIXES[set.id]) set.name = NAME_FIXES[set.id];
+    Object.assign(set, { total: set.cards.length, variants: real.length, valueUSD: sum('u'), valueEUR: sum('e') });
     await writeFile(file, JSON.stringify(set));
-    Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, standard: vs.filter((v) => v.std || (!stamped(v) && !v.x)).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
+    Object.assign(meta, { total: set.total, variants: set.variants, regular: real.filter((v) => !stamped(v)).length, standard: vs.filter((v) => v.std || (!stamped(v) && !v.x)).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
   }
   await writeFile(indexPath, JSON.stringify(index));
 }
