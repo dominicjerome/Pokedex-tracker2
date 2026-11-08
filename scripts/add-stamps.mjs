@@ -28,8 +28,10 @@ const EUR_TO_USD = 1.1;
 // TCGplayer groups that hold stamped / exclusive reprints, and the label used when a product has no tag
 // Play! Pokémon Prize Pack cards use TCGdex's name for the same stamp, so the two merge
 const PRIZE_PACK = 'player-rewards-program';
+const FIRST_PARTNER = 'first-partner-pack';
 const GROUPS = [
   [/^Prize Pack Series Cards$/i, PRIZE_PACK],
+  [/^First Partner Pack$/i, FIRST_PARTNER], // 2021 oversized (jumbo) starters – end up in the Jumbo Cards set
   [/^Deck Exclusives$/i, 'Deck Exclusive'],
   [/^Blister Exclusives$/i, 'Blister Exclusive'],
   [/^League & Championship Cards$/i, 'League'],
@@ -172,6 +174,61 @@ async function completionOps(groups, sets) {
   return ops;
 }
 
+// promo sets and their TCGplayer groups
+const PROMO_GROUPS = {
+  mep: 'ME: Mega Evolution Promo', svp: 'SV: Scarlet & Violet Promo Cards', swshp: 'SWSH: Sword & Shield Promo Cards',
+  smp: 'SM Promos', xyp: 'XY Promos', bwp: 'Black and White Promos', hgssp: 'HGSS Promos', dpp: 'Diamond and Pearl Promos',
+};
+/** promo cards TCGplayer lists that the card database is missing; returns set id -> [card] */
+async function promoGaps(groups, sets) {
+  const out = {};
+  for (const { set } of sets) {
+    const g = PROMO_GROUPS[set.id] && groups.find((x) => x.name === PROMO_GROUPS[set.id]);
+    if (!g) continue;
+    const [products, prices] = await Promise.all([get(`${API}/${g.groupId}/products`), get(`${API}/${g.groupId}/prices`)]);
+    const subsBy = new Map();
+    for (const x of prices.results) subsBy.set(x.productId, [...(subsBy.get(x.productId) || []), x]);
+    const have = new Set(set.cards.filter((c) => c.src !== 'tcgp').map((c) => numKey(c.n)));
+    const byNum = new Map();
+    for (const p of products.results) {
+      const number = (p.extendedData || []).find((e) => e.name === 'Number')?.value;
+      if (!number || /\//.test(number) || have.has(numKey(number))) continue;
+      if (!byNum.has(number)) byNum.set(number, []);
+      byNum.get(number).push(p);
+    }
+    for (const [number, ps] of byNum) {
+      const tagsOf = (p) => [...p.name.matchAll(/\(([^)]*)\)|\[([^\]]*)\]/g)].map((x) => (x[1] || x[2]).trim()).filter((t) => t !== number);
+      const base = ps.find((p) => !tagsOf(p).length) || ps[0];
+      const name = base.name.split(' - ')[0].replace(/\s*[([].*$/, '').trim();
+      const card = { id: `${set.id}-${number}`, n: number, name, r: 'Promo', src: 'tcgp', v: [] };
+      if (base.imageUrl) (card.ims = base.imageUrl), (card.iml = base.imageUrl.replace('_200w', '_in_1000x1000'));
+      for (const p of ps) {
+        let foil = null;
+        const stamps = [];
+        for (const t of tagsOf(p)) {
+          const f = FOILS.find(([re]) => re.test(t));
+          if (f) foil = f[1];
+          else if (!TYPE_TAGS.some(([re]) => re.test(t))) stamps.push(slug(t));
+        }
+        for (const sp of subsBy.get(p.productId) || [{ subTypeName: 'Holofoil' }]) {
+          const t = SUBTYPE[sp.subTypeName] || 'holo';
+          const v = { k: `${t}${foil ? ':' + foil : ''}${stamps.length ? '#' + stamps.join('+') : ''}`, t, src: 'tcgpc' };
+          if (stamps.length) v.s = stamps;
+          if (foil) v.f = foil;
+          const u = round2(sp.marketPrice ?? sp.midPrice);
+          if (u != null) v.u = u;
+          if (p !== base && p.imageUrl) v.im = p.imageUrl;
+          if (!card.v.some((x) => x.k === v.k)) card.v.push(v);
+        }
+      }
+      if (card.v.length) (out[set.id] ||= []).push(card);
+    }
+    out[set.id]?.sort((a, b) => a.n.localeCompare(b.n, undefined, { numeric: true }));
+    await sleep(100);
+  }
+  return out;
+}
+
 /** apply completion ops to one card; returns the number of printings added */
 function applyOps(c, list) {
   let added = 0;
@@ -260,6 +317,7 @@ export async function addStamps({ log = console.log } = {}) {
 
   let found = {}; // card id -> [variant]
   let ops = {}; // card id -> [completion op]
+  let promos = {}; // promo set id -> [card]
   try {
     const groups = (await get(`${API}/groups`)).results;
     const wanted = groups
@@ -276,9 +334,10 @@ export async function addStamps({ log = console.log } = {}) {
       for (const p of products.results) {
         const number = (p.extendedData || []).find((e) => e.name === 'Number')?.value;
         const prize = label === PRIZE_PACK;
+        const partner = label === FIRST_PARTNER;
         let m = number && String(number).match(/^0*(\d+[a-z]?)\s*\/\s*0*(\d+)$/i);
         // Prize Pack also reprints promos ("SWSH149"); other promo-numbered cards are already in the promo sets
-        const promoNum = prize && !m && number && /^([A-Z]{2,5})?\d+$/i.test(number) ? number : null;
+        const promoNum = (prize || partner) && !m && number && /^([A-Z]{2,5})?\d+$/i.test(number) ? number : null;
         if (!m && !promoNum) continue;
         const [, n, total] = m || [null, promoNum, null];
         const base = p.name.split(' - ')[0].replace(/\s*[([].*$/, '').trim();
@@ -312,12 +371,15 @@ export async function addStamps({ log = console.log } = {}) {
           stamps.push(slug(t));
         }
         if (prize) stamps.unshift(PRIZE_PACK); // every Prize Pack card carries the Play! Pokémon stamp
+        else if (partner) stamps.length = 0;
+        if (partner) stamps.push(FIRST_PARTNER);
         else if (!stamps.length) stamps.push(slug(label)); // e.g. a cosmos blister card is still a blister exclusive
         const subs = priceBy.get(p.productId) || [{ subTypeName: type === 'reverse' ? 'Reverse Holofoil' : type === 'normal' ? 'Normal' : 'Holofoil' }];
         for (const sp of subs) {
           const t = type || SUBTYPE[sp.subTypeName] || 'holo';
           const st = /1st Edition/.test(sp.subTypeName || '') ? ['1st-edition', ...stamps] : stamps;
-          const v = { k: `${t}${foil ? ':' + foil : ''}#${st.join('+')}`, t, s: st, src: 'tcgp' };
+          const v = { k: `${t}${foil ? ':' + foil : ''}#${st.join('+')}${partner ? '@jumbo' : ''}`, t, s: st, src: 'tcgp' };
+          if (partner) v.z = 'jumbo';
           if (foil) v.f = foil;
           const u = sp.marketPrice ?? sp.midPrice ?? sp.lowPrice;
           if (u > 0) v.u = Math.round(u * 100) / 100;
@@ -328,13 +390,29 @@ export async function addStamps({ log = console.log } = {}) {
       await sleep(150);
     }
     ops = await completionOps(groups, sets);
+    promos = await promoGaps(groups, sets);
   } catch (e) {
     log(`Stamps: TCGplayer catalogue unavailable (${e.message}) – using the saved stamped printings`);
     found = cache.stamps || cache;
     ops = cache.ops || {};
+    promos = cache.promos || {};
   }
 
   // apply to the set files (replacing what an earlier run added)
+  const jumboPath = path.join(DATA, 'sets', 'jumbo.json');
+  const jumboSet = existsSync(jumboPath) ? JSON.parse(await readFile(jumboPath, 'utf8')) : null;
+  let jumboDirty = false;
+  // promo cards TCGplayer lists that the card database hasn't added yet
+  let promoAdded = 0;
+  for (const s of sets) {
+    const extraCards = promos[s.set.id];
+    const before = s.set.cards.length;
+    s.set.cards = s.set.cards.filter((c) => c.src !== 'tcgp');
+    if (!extraCards && s.set.cards.length === before) continue;
+    const have = new Set(s.set.cards.map((c) => numKey(c.n)));
+    for (const c of extraCards || []) if (!have.has(numKey(c.n))) (s.set.cards.push(structuredClone(c)), promoAdded++);
+    s.set.total = s.set.cards.length;
+  }
   let added = 0, completed = 0;
   for (const s of sets) {
     let changed = false;
@@ -349,6 +427,16 @@ export async function addStamps({ log = console.log } = {}) {
       const extra = found[c.id];
       if (!extra) continue;
       for (const v of extra) {
+        if (v.z === 'jumbo') {
+          const jumboId = `jumbo-${s.set.id}_${c.n}`;
+          const existing = c.v.find((x) => x.z === 'jumbo') || jumboSet?.cards.find((x) => x.id === jumboId)?.v[0];
+          if (existing) {
+            if (v.im && !existing.im) existing.im = v.im;
+            if (existing.u == null && v.u != null) existing.u = v.u;
+            jumboDirty = true;
+            continue;
+          }
+        }
         // TCGdex already has this printing: keep it, but use TCGplayer's photo of the stamped card and its own price
         const same = c.v.find((x) => x.k === v.k || (x.t === v.t && (x.f || null) === (v.f || null) && (x.s || []).join() === v.s.join()));
         if (same) {
@@ -368,7 +456,7 @@ export async function addStamps({ log = console.log } = {}) {
         changed = true;
       }
     }
-    if (!changed) continue;
+    if (!changed && !promos[s.set.id]) continue;
     const set = s.set;
     set.variants = set.cards.reduce((a, c) => a + c.v.length, 0);
     const vs = set.cards.flatMap((c) => c.v);
@@ -377,10 +465,12 @@ export async function addStamps({ log = console.log } = {}) {
     await writeFile(s.file, JSON.stringify(set));
     Object.assign(s.meta, { variants: set.variants, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
   }
-  await writeFile(cachePath, JSON.stringify({ stamps: found, ops }));
+  if (jumboDirty && jumboSet) await writeFile(jumboPath, JSON.stringify(jumboSet));
+  await writeFile(cachePath, JSON.stringify({ stamps: found, ops, promos }));
   await writeFile(indexPath, JSON.stringify(index));
   log(`Stamps: added ${added} stamped/exclusive printings`);
   log(`Master sets: added ${completed} missing regular printings (reverse holos, 1st Editions)`);
+  log(`Promos: added ${promoAdded} promo cards the card database is missing`);
   if (UNMATCHED.length) log(`Prize Pack cards with no matching card (${UNMATCHED.length}): ${UNMATCHED.slice(0, 40).join('; ')}`);
   return added;
 }

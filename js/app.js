@@ -778,7 +778,7 @@ const isStampedKey = (key) => {
 };
 /** printings shown with the current "Stamped: show / hide" setting */
 /** part of the standard master set? (not stamped, not a tin/blister/box extra or duplicate listing – flagged x by the build) */
-const isStandard = (v) => !isStamped(v) && !v.x;
+const isStandard = (v) => !!v.std || (!isStamped(v) && !v.x);
 /** printings shown in the current mode */
 const visibleV = (card) => (prefs.master === 'standard' ? card.v.filter(isStandard) : card.v);
 const masterLabel = () => (prefs.master === 'standard' ? 'standard master set' : 'true master set');

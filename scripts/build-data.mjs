@@ -350,11 +350,14 @@ async function finalizeIndex() {
       if (extra(v, set.releaseDate)) v.x = 1;
       else delete v.x;
     }
-    // a card always keeps at least one standard printing
+    // a card always keeps at least one standard printing (a promo that only exists stamped keeps its first one)
     for (const c of set.cards) {
-      if (c.v.some((v) => !stamped(v) && !v.x)) continue;
-      const v = c.v.find((x) => !stamped(x) && !x.dup) || c.v.find((x) => !stamped(x));
-      if (v) delete v.x;
+      for (const v of c.v) if (v.std === 2) delete v.std;
+      if (c.v.some((v) => v.std || (!stamped(v) && !v.x))) continue;
+      const v = c.v.find((x) => !stamped(x) && !x.dup) || c.v.find((x) => !stamped(x)) || c.v.find((x) => !x.z);
+      if (!v) continue;
+      delete v.x;
+      if (stamped(v)) v.std = 2; // 2 = set here, recomputed every build
     }
     // gold Hyper Rares are sometimes listed twice (plain holo + gold holo) – the plain one is the duplicate
     for (const c of set.cards) {
@@ -367,7 +370,7 @@ async function finalizeIndex() {
     const sum = (key) => Math.round(vs.reduce((a, v) => a + (key === 'u' ? v.u ?? (v.e ?? 0) * EUR_TO_USD : eur(v)), 0) * 100) / 100;
     Object.assign(set, { total: set.cards.length, variants: vs.length, valueUSD: sum('u'), valueEUR: sum('e') });
     await writeFile(file, JSON.stringify(set));
-    Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, standard: vs.filter((v) => !stamped(v) && !v.x).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
+    Object.assign(meta, { total: set.total, variants: set.variants, regular: vs.filter((v) => !stamped(v)).length, standard: vs.filter((v) => v.std || (!stamped(v) && !v.x)).length, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
   }
   await writeFile(indexPath, JSON.stringify(index));
 }
