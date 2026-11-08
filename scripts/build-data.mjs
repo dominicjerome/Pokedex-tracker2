@@ -9,7 +9,7 @@
 //   data/sets/<id>.json   – master-set card list for one set (all variants,
 //                           stamps, foils, jumbos) with current prices
 
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -294,10 +294,38 @@ async function extractJumbos(index) {
 }
 const rawSetId = (id) => (PREFIX && id.startsWith(PREFIX) ? id.slice(PREFIX.length) : id);
 
+/**
+ * Sub-sets that belong with their main set: their cards move in with a number prefix, e.g. the 30th
+ * Celebration Classic Collection becomes 30th Celebration CC001–CC030 (card id "30th-CC001").
+ * The site migrates owned keys the same way. Safe to re-run.
+ */
+const MERGE_SETS = [{ from: '30th-c', into: '30th', prefix: 'CC' }];
+async function mergeSubsets(index) {
+  for (const m of MERGE_SETS) {
+    const from = `${PREFIX}${m.from}`, into = `${PREFIX}${m.into}`;
+    const fromFile = path.join(OUT, 'sets', `${m.from}.json`);
+    const intoFile = path.join(OUT, 'sets', `${m.into}.json`);
+    if (!existsSync(fromFile) || !existsSync(intoFile)) continue;
+    const sub = JSON.parse(await readFile(fromFile, 'utf8'));
+    const main = JSON.parse(await readFile(intoFile, 'utf8'));
+    const moved = sub.cards.map((c) => {
+      const n = `${m.prefix}${String(c.n).padStart(3, '0')}`;
+      const { idx, ...rest } = c;
+      return { ...rest, id: `${into}-${n}`, n, sub: sub.name };
+    });
+    main.cards = main.cards.filter((c) => !String(c.n).startsWith(m.prefix)).concat(moved);
+    await writeFile(intoFile, JSON.stringify(main));
+    await unlink(fromFile);
+    index.sets = index.sets.filter((s) => s.id !== from);
+    console.log(`Merged ${sub.name} into ${main.name} (${moved.length} cards)`);
+  }
+}
+
 async function finalizeIndex() {
   const indexPath = path.join(OUT, 'sets.json');
   if (!existsSync(indexPath)) return;
   const index = JSON.parse(await readFile(indexPath, 'utf8'));
+  await mergeSubsets(index);
   await extractJumbos(index);
   const stamped = (v) => (v.s || []).some((x) => x !== '1st-edition') && !(v.t === 'reverse' && v.s.length === 1 && v.s[0] === 'set-logo');
   // tin / blister / box versions (Cosmos, Galaxy, Cracked Ice… holos and metal cards) – part of the

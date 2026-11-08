@@ -85,6 +85,17 @@ function clearCollection() {
 
 // Jumbo printings now live in their own "Jumbo Cards" set: "sv01-001|holo@jumbo" -> "jumbo-sv01_001|holo@jumbo".
 // Runs on load and after every sync, and leaves a tombstone so other devices drop the old key too.
+// Sub-sets merged into their main set ("30th-c-001|holo" -> "30th-CC001|holo"); keep in step with MERGE_SETS in build-data.mjs
+const MERGED = [{ from: '30th-c', into: '30th', prefix: 'CC' }];
+function mergedKey(key) {
+  const [cardId, vk] = key.split('|');
+  for (const m of MERGED) {
+    if (!cardId.startsWith(m.from + '-')) continue;
+    const n = cardId.slice(m.from.length + 1);
+    return `${m.into}-${m.prefix}${n.padStart(3, '0')}|${vk}`;
+  }
+  return null;
+}
 function jumboKey(key) {
   const [cardId, vk] = key.split('|');
   if (!vk || !vk.includes('@jumbo') || /(^|\/)jumbo-/.test(cardId)) return null;
@@ -96,7 +107,7 @@ function migrateJumbos() {
   let changed = false;
   const now = Date.now();
   for (const k of Object.keys(collection)) {
-    const nk = jumboKey(k);
+    const nk = mergedKey(k) || jumboKey(k);
     if (!nk) continue;
     if (!collection[nk]) collection[nk] = { ...collection[k], m: now };
     delete collection[k];
@@ -106,7 +117,7 @@ function migrateJumbos() {
   }
   for (const b of Object.values(binders)) {
     if (!b.cards) continue;
-    const cards = b.cards.map((k) => jumboKey(k) || k);
+    const cards = b.cards.map((k) => mergedKey(k) || jumboKey(k) || k);
     if (cards.join() !== b.cards.join()) ((b.cards = cards), (b.m = now), (changed = true));
   }
   return changed;
@@ -858,6 +869,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
     }</div>
     ${card.en ? `<div class="enname">${esc(card.en)}</div>` : ''}
     ${card.from && !showSet ? `<div class="setname">from ${esc(card.from)}</div>` : ''}
+    ${card.sub && !showSet ? `<div class="setname">${esc(card.sub)}</div>` : ''}
     ${showSet ? `<div class="setname">${set.lang && set.lang !== 'en' ? `<span class="langchip">${langInfo(set.lang).short}</span> ` : ''}${esc(set.name)}</div>` : ''}
     ${also ? `<div class="also" title="Appears in the artwork"><span class="also-chip">✦ in art</span> ${esc(also)}</div>` : ''}
   </div>`;
