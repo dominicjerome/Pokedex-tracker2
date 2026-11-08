@@ -756,7 +756,19 @@ function variantBadges(v, card) {
   if (v.t === 'holo' && !plain && !v.f) out.push({ text: '(Holo)', cls: 'holo' });
   return out;
 }
-const badgesHtml = (v, card) => variantBadges(v, card).map((b) => `<span class="badge ${b.cls}">${esc(b.text)}</span>`).join('');
+// short labels for small screens
+const SHORT = {
+  'Normal (Holo)': 'Holo', Holo: 'Holo', '(Holo)': 'Holo', 'Reverse Holo': 'Rev', '1st Edition': '1st', Shadowless: 'Shdw',
+  Unlimited: 'Unl', 'Poké Ball': 'PB', 'Master Ball': 'MB', 'Energy Symbol': 'Energy', 'Dusk Ball': 'Dusk', 'Love Ball': 'Love',
+  'Friend Ball': 'Friend', 'Quick Ball': 'Quick', 'Team Rocket': 'Rocket', 'Cosmos Holo': 'Cosmos', 'Galaxy Holo': 'Galaxy',
+  'Cracked Ice': 'Ice', 'Play! Pokémon': 'Play!', 'Pokémon Center': 'PC', 'Deck Exclusive': 'Deck', 'Blister Exclusive': 'Blister',
+  'Prerelease Kit': 'Prerel.', 'First Partner Pack': 'Partner', '30th Celebration': '30th', 'Set Logo': 'Logo',
+};
+const shortLabel = (t) => SHORT[t] || (t.length <= 7 ? t : t.split(/[\s-]/)[0].slice(0, 7));
+const badgesHtml = (v, card) =>
+  variantBadges(v, card)
+    .map((b) => `<span class="badge ${b.cls}" title="${esc(b.text)}"><span class="bl">${esc(b.text)}</span><span class="bs">${esc(shortLabel(b.text))}</span></span>`)
+    .join('');
 const isFoil = (v) => v.t !== 'normal' || !!v.f;
 /** stamped / exclusive printing. 1st Edition doesn't count (it's part of every classic master set), nor does
  *  the set logo on EX-era reverse holos (that *is* their reverse holo). */

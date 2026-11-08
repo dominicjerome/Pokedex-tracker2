@@ -355,7 +355,7 @@ code { font-size: 0.85em; background: var(--surface-3); padding: 1px 6px; border
 .bturn.prev { left: 0; }
 .bturn.next { right: 0; }
 @media (min-width: 901px) { .bstage { padding: 0 54px; } }
-@media (max-width: 900px) { .bturn { display: none; } .bgrid { gap: 7px; } .bpage { padding: 10px 8px 6px; } .bpage .tile .row2 .badges { display: none; } }
+@media (max-width: 900px) { .bturn { display: none; } .bgrid { gap: 7px; } .bpage { padding: 10px 8px 6px; } }
 
 /* page turn: the outgoing page swings to the spine, the new one swings out from it */
 @keyframes turnOutNext { to { transform: rotateY(-90deg); } }
@@ -461,3 +461,14 @@ body.selecting .tile .face .slabchip { bottom: 8px; }
 /* set page stats: three across, value full width on phones */
 .set-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 560px) { .set-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .set-stats .stat:last-child { grid-column: 1 / -1; } }
+
+/* printing labels: full on wide screens, short on phones and in binder pages on small screens */
+.badge .bs { display: none; }
+@media (max-width: 640px) {
+  .badge .bl { display: none; }
+  .badge .bs { display: inline; }
+  .tile .row2 { flex-wrap: wrap; row-gap: 3px; }
+  .tile .row2 .badges { flex: 1 1 100%; }
+}
+.variant-row .badge .bl, .modal .badge .bl { display: inline; }
+.variant-row .badge .bs, .modal .badge .bs { display: none; }
