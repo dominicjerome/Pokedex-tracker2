@@ -1983,6 +1983,141 @@ async function binderEntries(b, onProgress) {
   return out;
 }
 
+// --------------------------------------------------------------------------
+// My bulk: extra copies of cards you already own, set by set
+// The first raw copy of a printing is the one in your collection; every raw copy after it is bulk.
+// (A printing you own only as graded copies has all of its raw copies as bulk.)
+// --------------------------------------------------------------------------
+const keptOf = (cardId, vk) => (gradedOf(cardId, vk).length ? 0 : 1);
+const extrasOf = (cardId, vk) => Math.max(0, rawOf(cardId, vk) - keptOf(cardId, vk));
+function setExtras(cardId, vk, n) {
+  setQty(cardId, vk, Math.max(0, n) + keptOf(cardId, vk));
+}
+
+async function pageBulk() {
+  await getIndex();
+  const owned = Object.keys(collection);
+  if (!owned.length) {
+    app.innerHTML = `<h1>My bulk</h1><div class="empty"><h3>Nothing here yet</h3><p>Mark the cards you own in your sets first – then count your spare copies here.</p><a class="btn primary" href="#/sets">Browse sets →</a></div>`;
+    return;
+  }
+  const setIds = [...new Set(owned.map((k) => setIdOfCard(k.split('|')[0])))];
+  const meta = await getIndexesFor(setIds);
+  app.innerHTML = `<h1>My bulk</h1><div class="load-progress">Loading your sets…${bar(0)}</div>`;
+  const sets = (await getSets(setIds.filter((id) => meta.has(id)), (d, t) => {
+    const x = app.querySelector('.load-progress .bar i');
+    if (x) x.style.width = `${(d / t) * 100}%`;
+  })).sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''));
+  if (!location.hash.startsWith('#/bulk')) return;
+
+  // every printing you own, grouped by set
+  const groups = sets
+    .map((set) => ({ set, rows: set.cards.flatMap((card) => card.v.filter((v) => qtyOf(card.id, v.k)).map((v) => ({ card, v }))) }))
+    .filter((g) => g.rows.length);
+  prefs.bulkOpen ||= {};
+
+  app.innerHTML = `<h1>My bulk</h1>
+    <p class="muted">Your spare copies, set by set. Only cards you own are listed – the first copy stays in your collection, use + / − to count the extras.</p>
+    <section class="stats bulk-stats" id="bulkstats"></section>
+    <div class="toolbar">
+      <div class="tb-row">
+        <div class="grow"><input class="search" id="q" type="search" placeholder="Search your cards…" autocomplete="off"></div>
+        <div class="seg" id="bfilter"><button data-v="all">All my cards</button><button data-v="extras">Only with extras</button></div>
+      </div>
+      <div class="tb-row">
+        <button class="btn sm" id="openall">Expand all</button><button class="btn sm" id="closeall">Collapse all</button>
+      </div>
+    </div>
+    <div id="bulklist" class="bulk-list"></div>`;
+
+  let filter = prefs.bulkFilter || 'all';
+  const sumGroup = (g) => g.rows.reduce((a, { card, v }) => ((a.n += extrasOf(card.id, v.k)), (a.value += extrasOf(card.id, v.k) * priceNum(v)), a), { n: 0, value: 0 });
+  const renderStats = () => {
+    const t = groups.reduce((a, g) => {
+      const s = sumGroup(g);
+      return { n: a.n + s.n, value: a.value + s.value, sets: a.sets + (s.n ? 1 : 0) };
+    }, { n: 0, value: 0, sets: 0 });
+    $('#bulkstats').innerHTML = `
+      <div class="stat"><b>${num(t.n)}</b><span>extra copies</span></div>
+      <div class="stat"><b class="value">${money(t.value)}</b><span>bulk value</span></div>
+      <div class="stat"><b>${num(t.sets)} / ${num(groups.length)}</b><span>sets with bulk</span></div>`;
+  };
+  const rowHtml = ({ card, v }) => {
+    const n = extrasOf(card.id, v.k);
+    return `<div class="bulk-row${n ? ' has' : ''}" data-key="${esc(keyOf(card.id, v.k))}">
+      ${imgUrl(card, 'low', v) ? `<img class="card-img" src="${esc(imgUrl(card, 'low', v))}" alt="" loading="lazy">` : '<span class="bulk-noimg"></span>'}
+      <div class="bulk-name"><b>${esc(card.name)}</b> <span class="muted">#${esc(card.n)}</span><div class="badges">${badgesHtml(v, card)}</div></div>
+      <div class="bulk-price">${priceHtml(v)}<small class="muted bulk-sub">${n ? money(n * priceNum(v)) : ''}</small></div>
+      <div class="stepper" data-bulk="${esc(keyOf(card.id, v.k))}"><button data-d="-1" aria-label="One fewer extra">−</button><span>${n}</span><button data-d="1" aria-label="One more extra">+</button></div>
+    </div>`;
+  };
+  const render = () => {
+    const q = $('#q').value.trim().toLowerCase();
+    const html = groups
+      .map((g) => {
+        const rows = g.rows.filter(({ card, v }) => (!q || card.name.toLowerCase().includes(q) || card.n.toLowerCase() === q) && (filter === 'all' || extrasOf(card.id, v.k)));
+        if (!rows.length) return '';
+        const s = sumGroup(g);
+        const open = q || filter === 'extras' || prefs.bulkOpen[g.set.id];
+        return `<details class="bulk-set" data-set="${esc(g.set.id)}"${open ? ' open' : ''}>
+          <summary><span class="bulk-set-name">${esc(g.set.name)}${g.set.lang && g.set.lang !== 'en' ? ` <span class="langchip">${langInfo(g.set.lang).short}</span>` : ''}</span>
+            <span class="muted">${num(g.rows.length)} ${g.rows.length === 1 ? 'card' : 'cards'} owned</span>
+            <span class="bulk-set-sum"><b>${num(s.n)}</b> ${s.n === 1 ? 'extra' : 'extras'} · <span class="value">${money(s.value)}</span></span></summary>
+          <div class="bulk-rows">${rows.map(rowHtml).join('')}</div>
+        </details>`;
+      })
+      .join('');
+    $('#bulklist').innerHTML = html || `<div class="empty"><h3>${filter === 'extras' ? 'No extras counted yet' : 'No cards match'}</h3><p>${filter === 'extras' ? 'Switch to "All my cards" and use + to count your spare copies.' : ''}</p></div>`;
+    renderStats();
+  };
+  const seg = $('#bfilter');
+  const mark = () => seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === filter));
+  seg.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    filter = prefs.bulkFilter = b.dataset.v;
+    savePrefs();
+    mark();
+    render();
+  };
+  let t;
+  $('#q').oninput = () => (clearTimeout(t), (t = setTimeout(render, 150)));
+  $('#openall').onclick = () => (groups.forEach((g) => (prefs.bulkOpen[g.set.id] = 1)), savePrefs(), render());
+  $('#closeall').onclick = () => ((prefs.bulkOpen = {}), savePrefs(), render());
+  // remember which sets are open
+  $('#bulklist').addEventListener('toggle', (e) => {
+    const d = e.target.closest?.('details[data-set]');
+    if (!d || $('#q').value || filter === 'extras') return;
+    if (d.open) prefs.bulkOpen[d.dataset.set] = 1;
+    else delete prefs.bulkOpen[d.dataset.set];
+    savePrefs();
+  }, true);
+  // + / − update just that row and the totals
+  $('#bulklist').addEventListener('click', (e) => {
+    const b = e.target.closest('.stepper[data-bulk] button');
+    if (!b) return;
+    const key = b.parentElement.dataset.bulk;
+    const [cardId, vk] = key.split('|');
+    setExtras(cardId, vk, extrasOf(cardId, vk) + Number(b.dataset.d));
+    const g = groups.find((x) => x.rows.some(({ card, v }) => keyOf(card.id, v.k) === key));
+    const r = g.rows.find(({ card, v }) => keyOf(card.id, v.k) === key);
+    const row = b.closest('.bulk-row');
+    const tmp = document.createElement('div');
+    tmp.innerHTML = rowHtml(r);
+    const fresh = tmp.firstElementChild;
+    const oldImg = row.querySelector('img');
+    if (oldImg) fresh.querySelector('img')?.replaceWith(oldImg);
+    row.replaceWith(fresh);
+    const s = sumGroup(g);
+    const sum = $('#bulklist').querySelector(`details[data-set="${CSS.escape(g.set.id)}"] .bulk-set-sum`);
+    if (sum) sum.innerHTML = `<b>${num(s.n)}</b> ${s.n === 1 ? 'extra' : 'extras'} · <span class="value">${money(s.value)}</span>`;
+    renderStats();
+  });
+  afterToggle = () => {};
+  mark();
+  render();
+}
+
 async function pageBinders() {
   await getIndex();
   const list = liveBinders();
@@ -2482,6 +2617,7 @@ async function route(keepScroll = false) {
     else if (name === 'cards') await pageCards();
     else if (name === 'settings') await pageSettings();
     else if (name === 'binders') await pageBinders();
+    else if (name === 'bulk') await pageBulk();
     else if (name === 'binder') await pageBinder(decodeURIComponent(arg || ''), hash.split('?')[0].split('/')[3]);
     else await pagePortfolio();
   } catch (e) {

@@ -35,6 +35,7 @@ own and they light up in full colour; everything else stays dimmed.
 
 **Views**
 - Grid or flip-through binder pages (4-, 9-, 12- or 16-pocket, two-page spreads, page 1 on its own like a real binder).
+- **My bulk:** your spare copies, set by set. It lists only the cards you own, each with a +/− counter for extra copies and a running bulk value.
 - **My binders:** build your own binders from any cards, for example everything with Jigglypuff in it.
 - Search finds Pokémon that appear in a card's artwork. Searching "Snivy" finds Fates Collide Jigglypuff 65/124.
 - Multi-select to add or remove many cards at once.
