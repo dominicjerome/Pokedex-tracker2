@@ -995,6 +995,7 @@ function mountBinder(container, tiles, layout, key) {
   stage.addEventListener('touchstart', (e) => ((sx = e.touches[0].clientX), (sy = e.touches[0].clientY)), { passive: true });
   stage.addEventListener('touchend', (e) => {
     if (sx == null) return;
+    if (document.body.classList.contains('arranging')) return (sx = null);
     const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
     sx = null;
     if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) go(cur + (dx < 0 ? 1 : -1));
@@ -1012,6 +1013,13 @@ document.addEventListener('keydown', (e) => {
 // switching between one page and two-page spreads when the window is resized
 narrowMQ.addEventListener('change', () => binderCtl && document.contains(binderCtl.root) && redrawPage?.());
 
+// Drag-to-arrange in custom binders: the open binder page sets arrangeCtx
+let arrangeCtx = null;
+app.addEventListener('pointerdown', (e) => arrangeCtx?.down(e));
+window.addEventListener('pointermove', (e) => arrangeCtx?.move(e), { passive: false });
+window.addEventListener('pointerup', (e) => arrangeCtx?.up(e));
+window.addEventListener('pointercancel', (e) => arrangeCtx?.up(e));
+
 // Delegated grid clicks (toggle ownership / select / open details)
 let gridLookup = new Map(); // key -> {card, v, set}
 let afterToggle = () => {};
@@ -1028,6 +1036,7 @@ app.addEventListener('click', (e) => {
   const entry = gridLookup.get(tile.dataset.key);
   if (!entry) return;
   if (btn.dataset.act === 'info') return openCard(entry.card, entry.set);
+  if (document.body.classList.contains('arranging') && tile.closest('#grid')) return; // arranging, not collecting
   const picker = tile.closest('.picker');
   if (picker && btn.dataset.act === 'toggle') {
     pickerToggle?.(entry, tile);
@@ -2189,6 +2198,7 @@ async function pageBinder(id, sub) {
       <div class="set-stats" id="bstats"></div>
     </section>
     <div class="toolbar">
+      <div class="tb-row">
       <div class="seg" id="bfilter"><button data-v="all">All</button><button data-v="owned">Owned</button><button data-v="missing">Missing</button></div>
       <select id="bsort" aria-label="Order">
         <option value="custom">Binder order</option><option value="release">Oldest set first</option><option value="newest">Newest set first</option>
@@ -2200,7 +2210,10 @@ async function pageBinder(id, sub) {
       </select>
       <span class="tb-spacer"></span>
       <span class="count" id="count"></span>
-      <button class="btn sm" id="selbtn" aria-pressed="false" title="Select cards to reorder, remove from the binder or mark owned">☐ Select</button>
+      <button class="btn sm" id="barrange" aria-pressed="false" title="Pick cards up and drag them into a new order">✥ Arrange</button>
+      <button class="btn sm" id="selbtn" aria-pressed="false" title="Select cards to move, remove from the binder or mark owned">☐ Select</button>
+      </div>
+      <div class="arrange-hint" id="arrangehint" hidden>Press and drag a card to move it. In binder pages, hold it at the edge of the page to turn to the next one.</div>
     </div>
     <div id="grid"></div>`;
 
@@ -2279,8 +2292,191 @@ async function pageBinder(id, sub) {
     entries = await binderEntries(b);
     draw();
   };
+
+  // ---- Arrange: pick cards up and drag them into a new order ----
+  let arranging = false;
+  let drag = null;
+  const arrangeBtn = $('#barrange');
+  const setArranging = (on) => {
+    arranging = on;
+    document.body.classList.toggle('arranging', on);
+    arrangeBtn.classList.toggle('on', on);
+    arrangeBtn.setAttribute('aria-pressed', on);
+    arrangeBtn.textContent = on ? '✓ Done' : '✥ Arrange';
+    $('#arrangehint').hidden = !on;
+    if (on && selectMode) setSelectMode(false);
+    if (on && (b.sort !== 'custom' || b.filter !== 'all')) {
+      // arranging works on the binder's own order, with every card showing
+      b.sort = 'custom';
+      b.filter = 'all';
+      $('#bsort').value = 'custom';
+      markSeg();
+      save(LS_BINDERS, binders);
+      draw();
+    }
+  };
+  arrangeBtn.onclick = () => setArranging(!arranging);
+  $('#bsort').addEventListener('change', () => arranging && b.sort !== 'custom' && setArranging(false));
+  seg.addEventListener('click', () => arranging && b.filter !== 'all' && setArranging(false));
+  $('#selbtn').addEventListener('click', () => arranging && setArranging(false));
+
+  const keyOfEntry = (e) => keyOf(e.card.id, e.v.k);
+  const tileFor = (key) => [...$('#grid').querySelectorAll('.tile[data-key]')].find((t) => t.dataset.key === key && t.offsetParent);
+  const markSource = () => tileFor(drag?.key)?.classList.add('drag-src');
+  /** redraw keeping positions: other cards glide to their new places (FLIP) */
+  const redrawAnimated = () => {
+    const before = new Map([...$('#grid').querySelectorAll('.tile[data-key]')].filter((t) => t.offsetParent).map((t) => [t.dataset.key, t.getBoundingClientRect()]));
+    draw();
+    markSource();
+    for (const t of $('#grid').querySelectorAll('.tile[data-key]')) {
+      const r0 = before.get(t.dataset.key);
+      if (!r0 || !t.offsetParent || t.dataset.key === drag?.key) continue;
+      const r1 = t.getBoundingClientRect();
+      const dx = r0.left - r1.left, dy = r0.top - r1.top;
+      if (!dx && !dy) continue;
+      t.style.transition = 'none';
+      t.style.transform = `translate(${dx}px, ${dy}px)`;
+      requestAnimationFrame(() => {
+        t.style.transition = 'transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1)';
+        t.style.transform = '';
+      });
+    }
+  };
+  const moveEntry = (fromKey, toKey, after) => {
+    const from = entries.findIndex((e) => keyOfEntry(e) === fromKey);
+    const [item] = entries.splice(from, 1);
+    let to = entries.findIndex((e) => keyOfEntry(e) === toKey) + (after ? 1 : 0);
+    entries.splice(to, 0, item);
+  };
+  const saveOrder = () => {
+    const placed = entries.map(keyOfEntry);
+    const rest = b.cards.filter((k) => !placed.includes(k)); // cards whose set couldn't load stay at the end
+    b.cards = [...placed, ...rest];
+    touchBinder(b);
+  };
+  const reduceMotionOn = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const startDrag = () => {
+    const tile = tileFor(drag.key);
+    if (!tile) return (drag = null);
+    const r = tile.getBoundingClientRect();
+    drag.offX = drag.startX - r.left;
+    drag.offY = drag.startY - r.top;
+    const ghost = document.createElement('div');
+    ghost.className = 'drag-ghost';
+    ghost.style.width = `${r.width}px`;
+    ghost.style.transformOrigin = `${drag.offX}px ${drag.offY}px`; // it hangs from where you hold it
+    ghost.appendChild(tile.cloneNode(true));
+    document.body.appendChild(ghost);
+    drag.ghost = ghost;
+    drag.started = true;
+    drag.angle = 0;
+    drag.spin = 0;
+    drag.vx = 0;
+    document.body.classList.add('dragging');
+    tile.classList.add('drag-src');
+    requestAnimationFrame(() => ghost.classList.add('lifted'));
+    const tick = () => {
+      if (!drag?.started) return;
+      // gravity: the card swings opposite to the way it moves, then wobbles back to hanging straight
+      const target = reduceMotionOn() ? 0 : Math.max(-26, Math.min(26, -drag.vx * 22));
+      drag.spin += (target - drag.angle) * 0.12;
+      drag.spin *= 0.8;
+      drag.angle += drag.spin;
+      drag.vx *= 0.88;
+      ghost.style.transform = `translate(${drag.x - drag.offX}px, ${drag.y - drag.offY}px) rotate(${drag.angle}deg)`;
+      // scroll the page when held near the top or bottom
+      const sy = drag.y < 70 ? -10 : drag.y > innerHeight - 70 ? 10 : 0;
+      if (sy && (window.scrollBy(0, sy), true)) retarget();
+      drag.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  };
+
+  /** where would the held card go? move it there, the others shuffle round */
+  const retarget = () => {
+    const over = document.elementFromPoint(drag.x, drag.y)?.closest('#grid .tile[data-key]');
+    if (!over || over.dataset.key === drag.key) return;
+    const r = over.getBoundingClientRect();
+    const after = drag.x > r.left + r.width / 2;
+    const sig = over.dataset.key + (after ? '>' : '<');
+    if (sig === drag.lastSig) return;
+    drag.lastSig = sig;
+    moveEntry(drag.key, over.dataset.key, after);
+    redrawAnimated();
+  };
+  const pageTurnCheck = () => {
+    const stage = $('#grid .bstage');
+    if (!stage || !binderCtl) return;
+    const r = stage.getBoundingClientRect();
+    const edge = Math.min(60, r.width * 0.08);
+    const dir = drag.x < r.left + edge ? -1 : drag.x > r.right - edge ? 1 : 0;
+    if (dir !== drag.turnDir) {
+      clearTimeout(drag.turnTimer);
+      drag.turnDir = dir;
+      if (dir)
+        drag.turnTimer = setTimeout(function turn() {
+          if (!drag?.started || drag.turnDir !== dir) return;
+          binderCtl.go(dir);
+          setTimeout(markSource, 520);
+          drag.turnTimer = setTimeout(turn, 1100); // keep turning while held there
+        }, 650);
+    }
+  };
+
+  arrangeCtx = {
+    down(e) {
+      if (!arranging || e.button > 0) return;
+      const tile = e.target.closest('#grid .tile[data-key]');
+      if (!tile || e.target.closest('.info-btn')) return;
+      e.preventDefault();
+      drag = { key: tile.dataset.key, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), started: false };
+    },
+    move(e) {
+      if (!drag) return;
+      e.preventDefault();
+      const now = performance.now();
+      const dt = Math.max(1, now - drag.t);
+      const dx = e.clientX - drag.x;
+      drag.vx = drag.vx * 0.6 + (dx / dt) * 0.4;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      drag.t = now;
+      if (!drag.started) {
+        if (Math.hypot(drag.x - drag.startX, drag.y - drag.startY) < 6) return;
+        startDrag();
+        if (!drag) return;
+      }
+      retarget();
+      pageTurnCheck();
+    },
+    up() {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      clearTimeout(d.turnTimer);
+      document.body.classList.remove('dragging');
+      if (!d.started) return;
+      cancelAnimationFrame(d.raf);
+      saveOrder();
+      // settle into its new slot
+      const tile = [...$('#grid').querySelectorAll('.tile[data-key]')].find((t) => t.dataset.key === d.key && t.offsetParent);
+      const r = tile?.getBoundingClientRect();
+      d.ghost.classList.remove('lifted');
+      d.ghost.classList.add('settling');
+      d.ghost.style.transform = r ? `translate(${r.left}px, ${r.top}px) rotate(0deg)` : d.ghost.style.transform;
+      if (!r) d.ghost.style.opacity = '0';
+      setTimeout(() => {
+        d.ghost.remove();
+        tile?.classList.remove('drag-src');
+        tileFor(d.key)?.classList.remove('drag-src');
+      }, 260);
+    },
+  };
+
   draw();
-  startLive([...new Set(entries.map((e) => e.card))], draw);
+  // live prices redraw the page – not in the middle of a drag
+  startLive([...new Set(entries.map((e) => e.card))], () => !drag && draw());
 }
 
 /** search every card (names and cameos) and tap to add/remove from the binder */
@@ -2603,6 +2799,8 @@ async function route(keepScroll = false) {
   const name = page || 'portfolio';
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (name === 'set' ? 'sets' : name === 'binder' ? 'binders' : name)));
   pickerToggle = null;
+  if (arrangeCtx) (arrangeCtx.up(), (arrangeCtx = null));
+  document.body.classList.remove('arranging', 'dragging');
   document.title = 'PokéVault – Card Set Tracker';
   const y = window.scrollY;
   if (modal.open) {

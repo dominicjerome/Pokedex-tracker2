@@ -501,3 +501,25 @@ body.selecting .tile .face .slabchip { bottom: 8px; }
 }
 .bulk-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 560px) { .bulk-stats { gap: 8px; } .bulk-stats .stat { padding: 10px; } .bulk-stats .stat b { font-size: 1.15rem; } .bulk-stats .stat span { font-size: 0.75rem; } }
+
+/* ---------- arrange (drag to reorder) ---------- */
+.arrange-hint { font-size: 0.85rem; color: var(--accent-2); padding: 2px 2px 0; }
+.arrange-hint[hidden] { display: none; }
+body.arranging #grid .tile { touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+body.arranging #grid .tile img { -webkit-user-drag: none; pointer-events: none; }
+body.arranging #grid .tile .face:hover { transform: none; }
+body.arranging #grid .tile .face { animation: jiggle 0.9s ease-in-out infinite; }
+body.arranging #grid .tile:nth-child(2n) .face { animation-delay: -0.45s; }
+@keyframes jiggle { 0%, 100% { transform: rotate(-0.6deg); } 50% { transform: rotate(0.6deg); } }
+body.dragging, body.dragging * { cursor: grabbing !important; }
+body.dragging #grid .tile .face { animation: none; }
+#grid .tile.drag-src > * { visibility: hidden; }
+#grid .tile.drag-src { border-radius: 4.5% / 3.3%; outline: 2px dashed var(--accent-2); outline-offset: -2px; background: rgba(168, 85, 247, 0.08); }
+.drag-ghost { position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none; will-change: transform; }
+.drag-ghost .tile { margin: 0; transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.18s; }
+.drag-ghost .tile .face { box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5); transition: box-shadow 0.18s; }
+.drag-ghost.lifted .tile { transform: translateY(-10px) scale(1.07); filter: brightness(1.06); }
+.drag-ghost.lifted .tile .face { box-shadow: 0 28px 50px rgba(0, 0, 0, 0.65), 0 0 0 2px var(--accent-2); }
+.drag-ghost.settling { transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.25s; }
+.drag-ghost .info-btn, .drag-ghost .selmark, .drag-ghost .tile > :not(.fw) { display: none; }
+@media (prefers-reduced-motion: reduce) { body.arranging #grid .tile .face { animation: none; } }
