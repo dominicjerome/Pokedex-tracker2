@@ -178,9 +178,17 @@ async function completionOps(groups, sets) {
 const PROMO_GROUPS = {
   mep: 'ME: Mega Evolution Promo', svp: 'SV: Scarlet & Violet Promo Cards', swshp: 'SWSH: Sword & Shield Promo Cards',
   smp: 'SM Promos', xyp: 'XY Promos', bwp: 'Black and White Promos', hgssp: 'HGSS Promos', dpp: 'Diamond and Pearl Promos',
+  mee: 'MEE: Mega Evolution Energies',
 };
-/** promo cards TCGplayer lists that the card database is missing; returns set id -> [card] */
-async function promoGaps(groups, sets) {
+// sets whose TCGplayer group also lists special versions of cards we already have (e.g. 30th Celebration energies)
+const TAGGED_VERSIONS = new Set(['mee']);
+// sets TCGplayer has before the card database does; each is built from its TCGplayer group until TCGdex adds it
+const TCGP_SETS = [
+  { id: '2026me', name: "McDonald's Collection 2026", group: "McDonald's Promos 2026", series: 'mc', seriesName: "McDonald's Collection", code: 'MCD26' },
+];
+/** promo cards TCGplayer lists that the card database is missing; returns set id -> [card].
+ *  Special versions of cards we already have (TAGGED_VERSIONS sets) go into `found` (card id -> [variant]). */
+async function promoGaps(groups, sets, found = {}) {
   const out = {};
   for (const { set } of sets) {
     const g = PROMO_GROUPS[set.id] && groups.find((x) => x.name === PROMO_GROUPS[set.id]);
@@ -188,29 +196,55 @@ async function promoGaps(groups, sets) {
     const [products, prices] = await Promise.all([get(`${API}/${g.groupId}/products`), get(`${API}/${g.groupId}/prices`)]);
     const subsBy = new Map();
     for (const x of prices.results) subsBy.set(x.productId, [...(subsBy.get(x.productId) || []), x]);
-    const have = new Set(set.cards.filter((c) => c.src !== 'tcgp').map((c) => numKey(c.n)));
+    const ownCards = new Map(set.cards.filter((c) => c.src !== 'tcgp').map((c) => [numKey(c.n), c]));
     const byNum = new Map();
+    const tagsOf = (p, number) => [...p.name.matchAll(/\(([^)]*)\)|\[([^\]]*)\]/g)].map((x) => (x[1] || x[2]).trim()).filter((t) => t !== number);
+    const energy = /energ/i.test(set.name);
     for (const p of products.results) {
       const number = (p.extendedData || []).find((e) => e.name === 'Number')?.value;
-      if (!number || /\//.test(number) || have.has(numKey(number))) continue;
+      if (!number || /\//.test(number)) continue;
+      const own = ownCards.get(numKey(number));
+      if (own) {
+        // e.g. "Basic Fire Energy - 002 (30th Celebration)": a special version of a card we have
+        const tags = tagsOf(p, number);
+        if (!TAGGED_VERSIONS.has(set.id) || !tags.length) continue;
+        const stamps = tags.filter((t) => !FOILS.some(([re]) => re.test(t)) && !TYPE_TAGS.some(([re]) => re.test(t))).map(slug);
+        const foil = tags.map((t) => FOILS.find(([re]) => re.test(t))?.[1]).find(Boolean);
+        for (const sp of subsBy.get(p.productId) || [{ subTypeName: 'Normal' }]) {
+          const t = SUBTYPE[sp.subTypeName] || 'normal';
+          const v = { k: `${t}${foil ? ':' + foil : ''}${stamps.length ? '#' + stamps.join('+') : ''}`, t, src: 'tcgp' };
+          if (stamps.length) v.s = stamps;
+          if (foil) v.f = foil;
+          const u = round2(sp.marketPrice ?? sp.midPrice);
+          if (u != null) v.u = u;
+          if (p.imageUrl) v.im = p.imageUrl;
+          if (!own.v.some((x) => x.k === v.k)) (found[own.id] ||= []).push(v);
+        }
+        continue;
+      }
       if (!byNum.has(number)) byNum.set(number, []);
       byNum.get(number).push(p);
     }
     for (const [number, ps] of byNum) {
-      const tagsOf = (p) => [...p.name.matchAll(/\(([^)]*)\)|\[([^\]]*)\]/g)].map((x) => (x[1] || x[2]).trim()).filter((t) => t !== number);
-      const base = ps.find((p) => !tagsOf(p).length) || ps[0];
-      const name = base.name.split(' - ')[0].replace(/\s*[([].*$/, '').trim();
-      const card = { id: `${set.id}-${number}`, n: number, name, r: 'Promo', src: 'tcgp', v: [] };
+      // a tag every listing of the number shares is part of the card ("… (30th Celebration)"), not a stamp
+      const common = tagsOf(ps[0], number).filter((t) => ps.every((p) => tagsOf(p, number).includes(t)) && !FOILS.some(([re]) => re.test(t)) && !TYPE_TAGS.some(([re]) => re.test(t)));
+      const own = (p) => tagsOf(p, number).filter((t) => !common.includes(t));
+      const base = ps.find((p) => !own(p).length) || ps[0];
+      let name = base.name.split(' - ')[0].replace(/\s*[([].*$/, '').trim();
+      if (energy) name = name.replace(/^Basic\s+/i, '');
+      const card = { id: `${set.id}-${number}`, n: number, name, r: energy ? 'Common' : 'Promo', src: 'tcgp', v: [] };
+      if (energy) card.cat = 'Energy';
+      if (common.length) card.sub = common.join(', ');
       if (base.imageUrl) (card.ims = base.imageUrl), (card.iml = base.imageUrl.replace('_200w', '_in_1000x1000'));
       for (const p of ps) {
         let foil = null;
         const stamps = [];
-        for (const t of tagsOf(p)) {
+        for (const t of own(p)) {
           const f = FOILS.find(([re]) => re.test(t));
           if (f) foil = f[1];
           else if (!TYPE_TAGS.some(([re]) => re.test(t))) stamps.push(slug(t));
         }
-        for (const sp of subsBy.get(p.productId) || [{ subTypeName: 'Holofoil' }]) {
+        for (const sp of subsBy.get(p.productId) || [{ subTypeName: energy ? 'Normal' : 'Holofoil' }]) {
           const t = SUBTYPE[sp.subTypeName] || 'holo';
           const v = { k: `${t}${foil ? ':' + foil : ''}${stamps.length ? '#' + stamps.join('+') : ''}`, t, src: 'tcgpc' };
           if (stamps.length) v.s = stamps;
@@ -224,6 +258,49 @@ async function promoGaps(groups, sets) {
       if (card.v.length) (out[set.id] ||= []).push(card);
     }
     out[set.id]?.sort((a, b) => a.n.localeCompare(b.n, undefined, { numeric: true }));
+    await sleep(100);
+  }
+  return out;
+}
+
+/** build TCGP_SETS that the card database doesn't have yet; returns [{ meta, set }] */
+async function tcgpOnlySets(groups, index) {
+  const out = [];
+  for (const def of TCGP_SETS) {
+    const g = groups.find((x) => x.name === def.group);
+    // TCGdex has it now (any id) – use that instead
+    if (!g || index.sets.some((m) => m.id !== def.id && norm(m.name) === norm(def.name))) continue;
+    const [products, prices] = await Promise.all([get(`${API}/${g.groupId}/products`), get(`${API}/${g.groupId}/prices`)]);
+    const subsBy = new Map();
+    for (const x of prices.results) subsBy.set(x.productId, [...(subsBy.get(x.productId) || []), x]);
+    let official = 0;
+    const cards = [];
+    for (const p of products.results) {
+      const number = (p.extendedData || []).find((e) => e.name === 'Number')?.value;
+      if (!number) continue; // sealed products
+      const [n, tot] = number.split('/').map((x) => x.trim().replace(/^0+(?=\d)/, ''));
+      official = Math.max(official, Number(tot) || 0);
+      const card = { id: `${def.id}-${n}`, n, name: p.name.split(' - ')[0].replace(/\s*[([].*$/, '').trim(), r: 'Promo', tp: p.productId, v: [] };
+      if (p.imageUrl) (card.ims = p.imageUrl), (card.iml = p.imageUrl.replace('_200w', '_in_1000x1000'));
+      for (const sp of subsBy.get(p.productId) || [{ subTypeName: 'Normal' }]) {
+        const t = SUBTYPE[sp.subTypeName] || 'normal';
+        const v = { k: t, t };
+        const u = round2(sp.marketPrice ?? sp.midPrice);
+        if (u != null) v.u = u;
+        if (!card.v.some((x) => x.k === v.k)) card.v.push(v);
+      }
+      cards.push(card);
+    }
+    if (!cards.length) continue;
+    cards.sort((a, b) => a.n.localeCompare(b.n, undefined, { numeric: true }));
+    const set = {
+      id: def.id, name: def.name, lang: 'en', series: def.series, seriesName: def.seriesName, releaseDate: g.publishedOn.slice(0, 10),
+      logo: null, symbol: null, code: def.code, official: official || cards.length, total: cards.length, source: 'TCGplayer', cards,
+    };
+    const prev = index.sets.find((m) => m.id === def.id);
+    const sib = index.sets.find((m) => m.series === def.series);
+    const meta = { ...Object.fromEntries(Object.entries(set).filter(([k]) => k !== 'cards')), seriesOrder: prev?.seriesOrder ?? sib?.seriesOrder ?? 99 };
+    out.push({ meta, set });
     await sleep(100);
   }
   return out;
@@ -318,6 +395,7 @@ export async function addStamps({ log = console.log } = {}) {
   let found = {}; // card id -> [variant]
   let ops = {}; // card id -> [completion op]
   let promos = {}; // promo set id -> [card]
+  let newSets = []; // [{ meta, set }] built from TCGplayer
   try {
     const groups = (await get(`${API}/groups`)).results;
     const wanted = groups
@@ -390,13 +468,25 @@ export async function addStamps({ log = console.log } = {}) {
       await sleep(150);
     }
     ops = await completionOps(groups, sets);
-    promos = await promoGaps(groups, sets);
+    promos = await promoGaps(groups, sets, found);
+    newSets = await tcgpOnlySets(groups, index);
   } catch (e) {
     log(`Stamps: TCGplayer catalogue unavailable (${e.message}) – using the saved stamped printings`);
     found = cache.stamps || cache;
     ops = cache.ops || {};
     promos = cache.promos || {};
+    newSets = (cache.newSets || []).filter(({ set }) => !index.sets.some((m) => m.id !== set.id && norm(m.name) === norm(set.name)));
   }
+  // sets only TCGplayer has so far
+  for (const { meta, set } of newSets) {
+    const file = path.join(DATA, 'sets', `${set.id}.json`);
+    await writeFile(file, JSON.stringify(set));
+    index.sets = index.sets.filter((m) => m.id !== set.id);
+    index.sets.push(meta);
+    sets.push({ meta, file, set });
+    log(`Stamps: added ${set.name} (${set.cards.length} cards) from TCGplayer`);
+  }
+  index.sets.sort((a, b) => (a.releaseDate || '9999').localeCompare(b.releaseDate || '9999'));
 
   // apply to the set files (replacing what an earlier run added)
   const jumboPath = path.join(DATA, 'sets', 'jumbo.json');
@@ -466,7 +556,7 @@ export async function addStamps({ log = console.log } = {}) {
     Object.assign(s.meta, { variants: set.variants, valueUSD: set.valueUSD, valueEUR: set.valueEUR });
   }
   if (jumboDirty && jumboSet) await writeFile(jumboPath, JSON.stringify(jumboSet));
-  await writeFile(cachePath, JSON.stringify({ stamps: found, ops, promos }));
+  await writeFile(cachePath, JSON.stringify({ stamps: found, ops, promos, newSets }));
   await writeFile(indexPath, JSON.stringify(index));
   log(`Stamps: added ${added} stamped/exclusive printings`);
   log(`Master sets: added ${completed} missing regular printings (reverse holos, 1st Editions)`);

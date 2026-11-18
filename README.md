@@ -62,7 +62,7 @@ GitHub Pages: *Settings → Pages → Deploy from a branch*, then pick the branc
 | --- | --- |
 | `build-data.mjs [--lang=xx] [setId …]` | Builds a catalogue from [TCGdex](https://tcgdex.dev) (`en`, `ja`, `zh-tw`, `th`, `id`) and then runs the steps below |
 | `fill-gaps.mjs` | Adds cards TCGdex is missing (e.g. Sun & Moon "a" prints, 30th Celebration Mew B/G/R) from [pokemontcg.io](https://pokemontcg.io) |
-| `add-stamps.mjs [--lang=ja]` | From TCGplayer's catalogue ([tcgcsv.com](https://tcgcsv.com)): stamped / exclusive / Prize Pack printings, plus missing reverse holos, 1st Editions and pattern photos; for Japanese, missing Mirror and pattern reverses |
+| `add-stamps.mjs [--lang=ja]` | From TCGplayer's catalogue ([tcgcsv.com](https://tcgcsv.com)): stamped / exclusive / Prize Pack printings, plus missing reverse holos, 1st Editions and pattern photos; promo cards TCGdex hasn't added yet, and brand-new sets TCGdex doesn't have yet (e.g. McDonald's 2026); for Japanese, missing Mirror and pattern reverses |
 | `fill-images.mjs [--lang=xx]` | Fills missing pictures from pokemontcg.io / TCGplayer, or the Japanese print for other Asian languages (marked "JP image") |
 | `build_cameos.py` | Builds `data/cameos.json` (Pokémon in the artwork) from [RotomAmiti's Cameo Pokémon Card Database](https://docs.google.com/spreadsheets/d/18nIkOgqQrHZTz0TrH_gL1e1nL1RcHiCmPF5finAjToY) |
 | `fetch-graded.mjs` | Fetches graded market prices into `data/graded.json` (needs `PPT_API_KEY`) |

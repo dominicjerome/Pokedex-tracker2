@@ -873,7 +873,7 @@ function tileHtml({ card, v, set }, { showSet = false, anyOwned = null, slab = n
       })()}
     </button>
     <button class="info-btn" data-act="info" aria-label="Details for ${esc(card.name)}">i</button></div>
-    <div class="cap"><span class="nm" title="${esc(card.name)}${card.en ? ` (${esc(card.en)})` : ''}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) && !card.from ? '/' + set.official : ''}</span></div>
+    <div class="cap"><span class="nm" title="${esc(card.name)}${card.en ? ` (${esc(card.en)})` : ''}">${esc(card.name)}</span><span class="num">${esc(card.n)}${set?.official && /^\d+$/.test(card.n) && !card.from && card.src !== 'tcgp' ? '/' + set.official : ''}</span></div>
     <div class="row2"><span class="badges">${badgesHtml(v, card)}</span>${
       slab
         ? slabSource(slab, card.id) === 'raw'
@@ -1173,7 +1173,7 @@ function openCard(card, set) {
     <div class="modal-body">
       <div>${imgUrl(card) ? `<img class="big card-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : `<div class="big" style="display:grid;place-items:center">${esc(card.name)}</div>`}</div>
       <div>
-        <div class="muted">${esc(set.name)} · #${esc(card.n)}${set.official ? ' / ' + set.official : ''}</div>
+        <div class="muted">${esc(set.name)} · #${esc(card.n)}${set.official && card.src !== 'tcgp' ? ' / ' + set.official : ''}</div>
         <h2>${esc(card.name)}</h2>${card.en ? `<div class="muted">${esc(card.en)}</div>` : ''}${card.imlang ? '<p class="muted small-note">The picture shows the Japanese print of this card – no picture of this language version is available yet.</p>' : ''}
         <dl class="facts">
           ${set.lang && set.lang !== 'en' ? `<dt>Language</dt><dd>${esc(langInfo(set.lang).name)}</dd>` : ''}
